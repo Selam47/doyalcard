@@ -1,0 +1,137 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────
+// Branch
+// ─────────────────────────────────────────────
+model Branch {
+  id        String   @id @default(cuid())
+  name      String
+  location  String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  customers Customer[]
+  orders    Order[]
+  users     User[]
+
+  @@map("branches")
+}
+
+// ─────────────────────────────────────────────
+// User (Staff & Admin)
+// ─────────────────────────────────────────────
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  role         Role     @default(STAFF)
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  branch   Branch? @relation(fields: [branchId], references: [id])
+  branchId String? @map("branch_id")
+
+  orders Order[]
+
+  @@map("users")
+}
+
+enum Role {
+  STAFF
+  ADMIN
+}
+
+// ─────────────────────────────────────────────
+// Customer
+// ─────────────────────────────────────────────
+model Customer {
+  id                String   @id @default(cuid())
+  name              String
+  phone             String   @unique
+  qrUuid            String   @unique @default(uuid()) @map("qr_uuid")
+  currentCycleCount Int      @default(0) @map("current_cycle_count")
+  lifetimeCount     Int      @default(0) @map("lifetime_count")
+  kvkkConsent       Boolean  @default(false) @map("kvkk_consent")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  branch   Branch? @relation(fields: [branchId], references: [id])
+  branchId String? @map("branch_id")
+
+  orders  Order[]
+  rewards Reward[]
+
+  @@map("customers")
+}
+
+// ─────────────────────────────────────────────
+// Order
+// ─────────────────────────────────────────────
+model Order {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now()) @map("created_at")
+
+  customer   Customer @relation(fields: [customerId], references: [id])
+  customerId String   @map("customer_id")
+
+  branch   Branch? @relation(fields: [branchId], references: [id])
+  branchId String? @map("branch_id")
+
+  staff   User?   @relation(fields: [staffId], references: [id])
+  staffId String? @map("staff_id")
+
+  reward Reward?
+
+  @@map("orders")
+}
+
+// ─────────────────────────────────────────────
+// CampaignRule
+// ─────────────────────────────────────────────
+model CampaignRule {
+  id           String   @id @default(cuid())
+  threshold    Int
+  rewardName   String   @map("reward_name")
+  isResetPoint Boolean  @default(false) @map("is_reset_point")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  rewards Reward[]
+
+  @@unique([threshold])
+  @@map("campaign_rules")
+}
+
+// ─────────────────────────────────────────────
+// Reward
+// ─────────────────────────────────────────────
+model Reward {
+  id        String       @id @default(cuid())
+  status    RewardStatus @default(PENDING)
+  createdAt DateTime     @default(now()) @map("created_at")
+  claimedAt DateTime?    @map("claimed_at")
+
+  customer   Customer @relation(fields: [customerId], references: [id])
+  customerId String   @map("customer_id")
+
+  rule   CampaignRule @relation(fields: [ruleId], references: [id])
+  ruleId String       @map("rule_id")
+
+  order   Order  @relation(fields: [orderId], references: [id])
+  orderId String @unique @map("order_id")
+
+  @@map("rewards")
+}
+
+enum RewardStatus {
+  PENDING
+  CLAIMED
+  EXPIRED
+}
