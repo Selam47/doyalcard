@@ -2,7 +2,9 @@
 import QRCode from "qrcode";
 
 const BASE_URL =
-  process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
+  process.env.NEXT_PUBLIC_BASE_URL ||
+  process.env.NEXT_PUBLIC_APP_URL ||
+  "https://ekrem-coskun-loyalty.vercel.app";
 
 /**
  * Generates a data-URL (base64 PNG) for a customer's QR code.
