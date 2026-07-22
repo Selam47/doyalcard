@@ -6,17 +6,24 @@ import QRCode from "qrcode";
  * Priority:
  * 1. window.location.origin (if running in browser - guarantees exact domain)
  * 2. NEXT_PUBLIC_BASE_URL / NEXT_PUBLIC_APP_URL (from environment variables)
- * 3. Default fallback to the new Vercel domain
+ * 3. VERCEL_URL (automatically injected by Vercel for preview/production deployments)
+ * No hardcoded domain fallback — avoids stale redirect issues on redeployments.
  */
 function getBaseUrl(): string {
   if (typeof window !== "undefined" && window.location.origin) {
     return window.location.origin;
   }
-  return (
-    process.env.NEXT_PUBLIC_BASE_URL ||
-    process.env.NEXT_PUBLIC_APP_URL ||
-    "https://doyalcard.vercel.app"
-  );
+  if (process.env.NEXT_PUBLIC_BASE_URL) {
+    return process.env.NEXT_PUBLIC_BASE_URL;
+  }
+  if (process.env.NEXT_PUBLIC_APP_URL) {
+    return process.env.NEXT_PUBLIC_APP_URL;
+  }
+  // VERCEL_URL is injected by Vercel at build time (without the protocol)
+  if (process.env.VERCEL_URL) {
+    return `https://${process.env.VERCEL_URL}`;
+  }
+  return "";
 }
 
 /**
