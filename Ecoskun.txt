@@ -1,0 +1,9 @@
+Ana Sayfa: http://localhost:3000
+
+Giriş (Personel/Admin): http://localhost:3000/login
+
+Kasa Personeli Ekranı: http://localhost:3000/staff
+
+Patron/Yönetici Ekranı: http://localhost:3000/admin
+
+Müşteri Kartı Örneği: http://localhost:3000/card/aaaaaaaa-0000-0000-0000-000000000001
