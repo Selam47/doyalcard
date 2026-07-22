@@ -41,8 +41,14 @@ export default async function HomePage() {
           {/* CTA Buttons */}
           <div className="flex flex-col sm:flex-row gap-4 pt-4">
             <Link
-              href="/login"
+              href="/customer/login"
               className="inline-flex items-center justify-center rounded-lg bg-green-600 px-6 py-3 text-lg font-semibold text-white transition hover:bg-green-700"
+            >
+              🫓 Müşteri Girişi
+            </Link>
+            <Link
+              href="/login"
+              className="inline-flex items-center justify-center rounded-lg border border-green-300 px-6 py-3 text-lg font-semibold text-green-700 transition hover:bg-green-50"
             >
               Personel Girişi
             </Link>
@@ -184,9 +190,13 @@ export default async function HomePage() {
         <div className="mt-20 text-center text-gray-500 text-sm">
           <p>© 2026 Ekrem Coşkun Döner. Tüm hakları saklıdır.</p>
           <p className="mt-2">
-            Personel girişi için{" "}
-            <Link href="/login" className="text-green-600 hover:underline">
+            Müşteri girişi için{" "}
+            <Link href="/customer/login" className="text-green-600 hover:underline">
               buraya tıklayın
+            </Link>
+            {" · "}
+            <Link href="/login" className="text-gray-400 hover:underline">
+              Personel Girişi
             </Link>
           </p>
         </div>
