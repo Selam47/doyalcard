@@ -107,25 +107,30 @@ export function CustomerPhoneLoginForm() {
       "recaptcha-container", // string id — Firebase resolves via getElementById
       {
         size: "invisible",
-        // Called when the invisible reCAPTCHA token is successfully obtained
-        callback: () => {},
-        // Called when the token expires before it is used — reset, not destroy,
-        // so Firebase can silently re-verify without a full teardown
+        // Called when the reCAPTCHA challenge is solved — token is ready to
+        // be consumed by signInWithPhoneNumber (Firebase handles this internally)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        callback: (_response: any) => {
+          // reCAPTCHA solved — allow SMS send
+        },
+        // Called when the token expires before it is used.
+        // We clear (not destroy) the widget so it can silently re-arm itself
+        // without a full teardown, preventing captcha-check-failed on resend.
         "expired-callback": () => {
-  if (window.recaptchaVerifier) {
-    window.recaptchaVerifier.clear();
-  }
-},
-        // Called on a hard reCAPTCHA error — full teardown required
+          if (window.recaptchaVerifier) {
+            try { window.recaptchaVerifier.clear(); } catch { /* already gone */ }
+          }
+        },
+        // Called on a hard reCAPTCHA error — full teardown is required.
+        // The catch block in handleSendOtp shows the user-facing error.
         "error-callback": () => {
           destroyRecaptcha();
-          toast.error("reCAPTCHA hatası. Sayfayı yenileyip tekrar deneyin.");
         },
       }
     );
 
-    // Expose on window so Firebase internals can locate it if needed, and
-    // so expired-callback can call window.recaptchaVerifier?.reset() safely.
+    // Expose on window so expired-callback / error-callback can reference it
+    // without closing over a potentially stale ref.
     window.recaptchaVerifier = verifier;
 
     // Eagerly render the invisible widget so it is pre-registered before
