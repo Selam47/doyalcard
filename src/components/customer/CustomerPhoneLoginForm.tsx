@@ -112,8 +112,10 @@ export function CustomerPhoneLoginForm() {
         // Called when the token expires before it is used — reset, not destroy,
         // so Firebase can silently re-verify without a full teardown
         "expired-callback": () => {
-          window.recaptchaVerifier?.reset();
-        },
+  if (window.recaptchaVerifier) {
+    window.recaptchaVerifier.clear();
+  }
+},
         // Called on a hard reCAPTCHA error — full teardown required
         "error-callback": () => {
           destroyRecaptcha();
