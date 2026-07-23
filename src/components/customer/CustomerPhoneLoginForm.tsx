@@ -16,6 +16,10 @@
 //     pre-registered before signInWithPhoneNumber is invoked.
 //  4. Every error path and every "go back" path calls destroyRecaptcha() so
 //     the next send attempt always starts with a clean slate.
+//  5. Phone numbers are normalized through a SINGLE helper (toE164) so the
+//     leading national "0" (e.g. "0555 123 45 67") never leaks into the
+//     E.164 string sent to Firebase — this was silently producing invalid
+//     numbers like "+900555..." and causing auth/invalid-phone-number.
 
 // Extend window so TypeScript accepts window.recaptchaVerifier
 declare global {
@@ -47,6 +51,23 @@ const COUNTRY_CODES = [
 
 type Step = "phone" | "otp";
 
+// ── Phone normalization helpers ───────────────────────────────────────────
+// Strips everything but digits, then strips a leading national trunk "0"
+// (very common in TR/EU numbers: "0555 123 45 67" → "5551234567").
+// Without this, "+90" + "0555..." becomes the invalid "+900555..." and
+// Firebase rejects the request before ever sending an SMS.
+function normalizeDigits(raw: string): string {
+  return raw.replace(/\D/g, "").replace(/^0+/, "");
+}
+
+function toE164(countryCode: string, rawPhone: string): string {
+  return `${countryCode}${normalizeDigits(rawPhone)}`;
+}
+
+// Loose E.164 sanity check (7–15 digits after the +) — catches obviously
+// malformed numbers client-side before we ever touch Firebase/reCAPTCHA.
+const E164_REGEX = /^\+[1-9]\d{7,14}$/;
+
 export function CustomerPhoneLoginForm() {
   const router = useRouter();
 
@@ -64,6 +85,10 @@ export function CustomerPhoneLoginForm() {
   const recaptchaContainerRef = useRef<HTMLDivElement | null>(null);
   const otpInputsRef = useRef<(HTMLInputElement | null)[]>([]);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // The exact E.164 number the OTP was actually sent to — used again at
+  // verify time so step 2 never recomputes (and potentially diverges from)
+  // the number step 1 sent to Firebase.
+  const sentPhoneRef = useRef<string>("");
 
   // ── destroyRecaptcha ──────────────────────────────────────────────────────
   // Fully tears down the verifier AND wipes the container innerHTML so
@@ -162,6 +187,7 @@ export function CustomerPhoneLoginForm() {
   const handleGoBackToPhone = useCallback(() => {
     destroyRecaptcha();
     confirmationRef.current = null;
+    sentPhoneRef.current = "";
     if (countdownRef.current) clearInterval(countdownRef.current);
     countdownRef.current = null;
     setResendCountdown(0);
@@ -172,8 +198,10 @@ export function CustomerPhoneLoginForm() {
   // ── Step 1: Send OTP ─────────────────────────────────────────────────────
   async function handleSendOtp(e: React.FormEvent) {
     e.preventDefault();
-    const cleaned = phoneNumber.replace(/\D/g, "");
-    if (cleaned.length < 7) {
+
+    const fullPhone = toE164(countryCode, phoneNumber);
+
+    if (!E164_REGEX.test(fullPhone)) {
       toast.error("Geçerli bir telefon numarası girin.");
       return;
     }
@@ -182,10 +210,10 @@ export function CustomerPhoneLoginForm() {
     try {
       // Always create a fresh verifier for every send attempt
       const verifier = await createRecaptcha();
-      const fullPhone = `${countryCode}${cleaned}`;
 
       const result = await signInWithPhoneNumber(auth, fullPhone, verifier);
       confirmationRef.current = result;
+      sentPhoneRef.current = fullPhone;
 
       setStep("otp");
       startCountdown();
@@ -206,6 +234,10 @@ export function CustomerPhoneLoginForm() {
         toast.error("reCAPTCHA doğrulaması başarısız. Lütfen tekrar deneyin.");
       } else if (code === "auth/quota-exceeded") {
         toast.error("SMS kotası aşıldı. Lütfen daha sonra tekrar deneyin.");
+      } else if (code === "auth/unauthorized-domain") {
+        toast.error("Bu alan adı Firebase'de yetkili değil. Lütfen yönetici ile iletişime geçin.");
+      } else if (code === "auth/network-request-failed") {
+        toast.error("Ağ hatası. İnternet bağlantınızı kontrol edin.");
       } else {
         toast.error("SMS gönderilemedi. Lütfen tekrar deneyin.");
       }
@@ -222,12 +254,19 @@ export function CustomerPhoneLoginForm() {
       toast.error("Lütfen 6 haneli kodu girin.");
       return;
     }
+    if (!confirmationRef.current) {
+      toast.error("Oturum süresi doldu. Lütfen yeni kod isteyin.");
+      handleGoBackToPhone();
+      return;
+    }
 
     setLoading(true);
     try {
-      const credential = await confirmationRef.current!.confirm(code);
+      const credential = await confirmationRef.current.confirm(code);
       const user = credential.user;
-      const phone = `${countryCode}${phoneNumber.replace(/\D/g, "")}`;
+      // Reuse the exact number the OTP was sent to — never recompute it,
+      // so step 2 can't drift from what Firebase actually verified.
+      const phone = sentPhoneRef.current;
 
       // Send verified phone + Firebase UID to our backend
       const res = await fetch("/api/customer/auth", {
@@ -399,7 +438,7 @@ export function CustomerPhoneLoginForm() {
 
             <p className="text-sm text-green-300/80">
               <span className="font-semibold text-white">
-                {countryCode} {phoneNumber}
+                {sentPhoneRef.current || `${countryCode} ${phoneNumber}`}
               </span>{" "}
               numarasına gönderilen 6 haneli kodu girin.
             </p>
