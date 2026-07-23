@@ -4,6 +4,25 @@
 // Two-step Firebase Phone Auth flow:
 //   Step 1 → Enter phone number, send OTP via Firebase invisible reCAPTCHA
 //   Step 2 → Enter 6-digit OTP, confirm, POST to /api/customer/auth, redirect
+//
+// reCAPTCHA lifecycle rules followed here:
+//  1. The container div is ALWAYS mounted (never conditionally rendered) and
+//     carries a stable id="recaptcha-container" so Firebase resolves it via
+//     document.getElementById — the most reliable lookup across SDK versions.
+//  2. destroyRecaptcha() calls verifier.clear() AND wipes innerHTML so
+//     Firebase's internal widget registry is fully reset.
+//  3. createRecaptcha() always destroys first, then creates + render()s a
+//     fresh verifier.  render() is called eagerly so the invisible widget is
+//     pre-registered before signInWithPhoneNumber is invoked.
+//  4. Every error path and every "go back" path calls destroyRecaptcha() so
+//     the next send attempt always starts with a clean slate.
+
+// Extend window so TypeScript accepts window.recaptchaVerifier
+declare global {
+  interface Window {
+    recaptchaVerifier?: import("firebase/auth").RecaptchaVerifier;
+  }
+}
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
@@ -41,42 +60,107 @@ export function CustomerPhoneLoginForm() {
 
   const confirmationRef = useRef<ConfirmationResult | null>(null);
   const recaptchaVerifierRef = useRef<RecaptchaVerifier | null>(null);
+  // Direct ref to the stable container DOM node (never conditionally rendered)
+  const recaptchaContainerRef = useRef<HTMLDivElement | null>(null);
   const otpInputsRef = useRef<(HTMLInputElement | null)[]>([]);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // ── destroyRecaptcha ──────────────────────────────────────────────────────
+  // Fully tears down the verifier AND wipes the container innerHTML so
+  // Firebase's internal registry no longer sees a rendered widget.
+  const destroyRecaptcha = useCallback(() => {
+    if (recaptchaVerifierRef.current) {
+      try {
+        recaptchaVerifierRef.current.clear();
+      } catch {
+        // Widget may already be gone — safe to ignore
+      }
+      recaptchaVerifierRef.current = null;
+    }
+    // Remove from window to prevent stale references
+    delete window.recaptchaVerifier;
+    // Manually clear the DOM node so next RecaptchaVerifier starts fresh
+    if (recaptchaContainerRef.current) {
+      recaptchaContainerRef.current.innerHTML = "";
+    }
+  }, []);
 
   // ── Cleanup on unmount ───────────────────────────────────────────────────
   useEffect(() => {
     return () => {
       if (countdownRef.current) clearInterval(countdownRef.current);
-      try { recaptchaVerifierRef.current?.clear(); } catch { /* ignore */ }
+      destroyRecaptcha();
     };
-  }, []);
+  }, [destroyRecaptcha]);
 
-  // ── Initialise invisible reCAPTCHA ────────────────────────────────────────
-  const initRecaptcha = useCallback(() => {
-    if (recaptchaVerifierRef.current) {
-      try { recaptchaVerifierRef.current.clear(); } catch { /* ignore */ }
-    }
-    recaptchaVerifierRef.current = new RecaptchaVerifier(
+  // ── createRecaptcha ───────────────────────────────────────────────────────
+  // Always destroys any previous instance, then creates + eagerly renders a
+  // fresh invisible verifier using the string id 'recaptcha-container'.
+  // Using a string id (resolved via document.getElementById internally by
+  // Firebase) is the most reliable approach and avoids the 503
+  // auth/error-code:-39 that can occur when passing a DOM element reference.
+  const createRecaptcha = useCallback(async (): Promise<RecaptchaVerifier> => {
+    destroyRecaptcha(); // clean slate — prevents "already rendered" error
+
+    const verifier = new RecaptchaVerifier(
       auth,
-      "recaptcha-container",
-      { size: "invisible" }
+      "recaptcha-container", // string id — Firebase resolves via getElementById
+      {
+        size: "invisible",
+        // Called when the invisible reCAPTCHA token is successfully obtained
+        callback: () => {},
+        // Called when the token expires before it is used — reset, not destroy,
+        // so Firebase can silently re-verify without a full teardown
+        "expired-callback": () => {
+          window.recaptchaVerifier?.reset();
+        },
+        // Called on a hard reCAPTCHA error — full teardown required
+        "error-callback": () => {
+          destroyRecaptcha();
+          toast.error("reCAPTCHA hatası. Sayfayı yenileyip tekrar deneyin.");
+        },
+      }
     );
-  }, []);
 
-  // ── Start countdown timer for resend ─────────────────────────────────────
+    // Expose on window so Firebase internals can locate it if needed, and
+    // so expired-callback can call window.recaptchaVerifier?.reset() safely.
+    window.recaptchaVerifier = verifier;
+
+    // Eagerly render the invisible widget so it is pre-registered before
+    // signInWithPhoneNumber is called — avoids async race conditions.
+    await verifier.render();
+
+    recaptchaVerifierRef.current = verifier;
+    return verifier;
+  }, [destroyRecaptcha]);
+
+  // ── startCountdown ────────────────────────────────────────────────────────
   const startCountdown = useCallback(() => {
+    if (countdownRef.current) clearInterval(countdownRef.current);
     setResendCountdown(30);
     countdownRef.current = setInterval(() => {
       setResendCountdown((prev) => {
         if (prev <= 1) {
           clearInterval(countdownRef.current!);
+          countdownRef.current = null;
           return 0;
         }
         return prev - 1;
       });
     }, 1000);
   }, []);
+
+  // ── handleGoBackToPhone ───────────────────────────────────────────────────
+  // Single source of truth for "go back to step 1" — always destroys verifier.
+  const handleGoBackToPhone = useCallback(() => {
+    destroyRecaptcha();
+    confirmationRef.current = null;
+    if (countdownRef.current) clearInterval(countdownRef.current);
+    countdownRef.current = null;
+    setResendCountdown(0);
+    setStep("phone");
+    setOtp(["", "", "", "", "", ""]);
+  }, [destroyRecaptcha]);
 
   // ── Step 1: Send OTP ─────────────────────────────────────────────────────
   async function handleSendOtp(e: React.FormEvent) {
@@ -89,30 +173,35 @@ export function CustomerPhoneLoginForm() {
 
     setLoading(true);
     try {
-      initRecaptcha();
+      // Always create a fresh verifier for every send attempt
+      const verifier = await createRecaptcha();
       const fullPhone = `${countryCode}${cleaned}`;
-      const result = await signInWithPhoneNumber(
-        auth,
-        fullPhone,
-        recaptchaVerifierRef.current!
-      );
+
+      const result = await signInWithPhoneNumber(auth, fullPhone, verifier);
       confirmationRef.current = result;
+
       setStep("otp");
       startCountdown();
       toast.success("Doğrulama kodu gönderildi!");
-      // Auto-focus first OTP cell
+      // Auto-focus first OTP cell after React re-renders the OTP form
       setTimeout(() => otpInputsRef.current[0]?.focus(), 100);
     } catch (err: unknown) {
-      console.error(err);
+      console.error("[reCAPTCHA / OTP send error]", err);
+      // Always destroy on failure so the next attempt starts fresh
+      destroyRecaptcha();
+
       const code = (err as { code?: string }).code;
       if (code === "auth/invalid-phone-number") {
         toast.error("Geçersiz telefon numarası formatı.");
       } else if (code === "auth/too-many-requests") {
-        toast.error("Çok fazla deneme. Lütfen daha sonra tekrar deneyin.");
+        toast.error("Çok fazla deneme. Lütfen birkaç dakika sonra tekrar deneyin.");
+      } else if (code === "auth/captcha-check-failed") {
+        toast.error("reCAPTCHA doğrulaması başarısız. Lütfen tekrar deneyin.");
+      } else if (code === "auth/quota-exceeded") {
+        toast.error("SMS kotası aşıldı. Lütfen daha sonra tekrar deneyin.");
       } else {
-        toast.error("OTP gönderilemedi. Lütfen tekrar deneyin.");
+        toast.error("SMS gönderilemedi. Lütfen tekrar deneyin.");
       }
-      try { recaptchaVerifierRef.current?.clear(); } catch { /* ignore */ }
     } finally {
       setLoading(false);
     }
@@ -133,7 +222,7 @@ export function CustomerPhoneLoginForm() {
       const user = credential.user;
       const phone = `${countryCode}${phoneNumber.replace(/\D/g, "")}`;
 
-      // Send verified phone to our backend
+      // Send verified phone + Firebase UID to our backend
       const res = await fetch("/api/customer/auth", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -151,14 +240,14 @@ export function CustomerPhoneLoginForm() {
       router.push("/customer/dashboard");
       router.refresh();
     } catch (err: unknown) {
-      console.error(err);
+      console.error("[OTP verify error]", err);
       const code = (err as { code?: string }).code;
       if (code === "auth/invalid-verification-code") {
         toast.error("Hatalı doğrulama kodu. Lütfen tekrar deneyin.");
-      } else if (code === "auth/code-expired") {
+      } else if (code === "auth/code-expired" || code === "auth/session-expired") {
         toast.error("Kodun süresi doldu. Lütfen yeni kod isteyin.");
-        setStep("phone");
-        setOtp(["", "", "", "", "", ""]);
+        // Full reset — destroy verifier so next send is clean
+        handleGoBackToPhone();
       } else {
         toast.error("Doğrulama başarısız. Lütfen tekrar deneyin.");
       }
@@ -194,18 +283,28 @@ export function CustomerPhoneLoginForm() {
     otpInputsRef.current[Math.min(pasted.length, 5)]?.focus();
   }
 
-  async function handleResend() {
+  // Resend = go back to phone step with a clean slate
+  function handleResend() {
     if (resendCountdown > 0) return;
-    setStep("phone");
-    setOtp(["", "", "", "", "", ""]);
-    confirmationRef.current = null;
+    handleGoBackToPhone();
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-6">
-      {/* Invisible reCAPTCHA container — must always be in the DOM */}
-      <div id="recaptcha-container" />
+      {/*
+        IMPORTANT: This div is ALWAYS in the DOM — never conditionally rendered.
+        It is referenced via recaptchaContainerRef (not a string id) so React
+        never unmounts it between step 1 and step 2, preventing duplicate-widget
+        errors caused by Firebase re-scanning the DOM.
+        position:absolute / visibility:hidden keeps it invisible to users.
+      */}
+      <div
+        id="recaptcha-container"
+        ref={recaptchaContainerRef}
+        aria-hidden="true"
+        style={{ position: "absolute", width: 0, height: 0, overflow: "hidden" }}
+      />
 
       {step === "phone" ? (
         /* ── Step 1: Phone Input ─────────────────────────────────────── */
@@ -284,7 +383,7 @@ export function CustomerPhoneLoginForm() {
               </label>
               <button
                 type="button"
-                onClick={() => { setStep("phone"); setOtp(["", "", "", "", "", ""]); }}
+                onClick={handleGoBackToPhone}
                 className="text-xs text-green-300 hover:text-white transition-colors"
               >
                 ← Numarayı Değiştir
@@ -292,7 +391,10 @@ export function CustomerPhoneLoginForm() {
             </div>
 
             <p className="text-sm text-green-300/80">
-              <span className="font-semibold text-white">{countryCode} {phoneNumber}</span> numarasına gönderilen 6 haneli kodu girin.
+              <span className="font-semibold text-white">
+                {countryCode} {phoneNumber}
+              </span>{" "}
+              numarasına gönderilen 6 haneli kodu girin.
             </p>
 
             {/* 6-cell OTP input */}
