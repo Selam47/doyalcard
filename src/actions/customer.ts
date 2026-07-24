@@ -209,6 +209,44 @@ export async function getCustomerByUuid(uuid: string) {
 }
 
 /**
+ * Get customer by ID (for the customer self-service dashboard)
+ * Used server-side after verifying the customer session cookie.
+ * No staff/admin auth is required — the caller must already have confirmed
+ * the session belongs to this customerId.
+ */
+export async function getCustomerById(id: string) {
+  if (!id || typeof id !== "string") return null;
+
+  try {
+    const customer = await prisma.customer.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        qrUuid: true,
+        currentCycleCount: true,
+        lifetimeCount: true,
+        createdAt: true,
+        branch: { select: { name: true, location: true } },
+        rewards: {
+          orderBy: { createdAt: "desc" },
+          include: {
+            rule: true,
+            order: { select: { createdAt: true } },
+          },
+        },
+      },
+    });
+
+    return customer;
+  } catch (error) {
+    console.error("[getCustomerById] Error:", error);
+    return null;
+  }
+}
+
+/**
  * Get customer statistics (for admin dashboard)
  */
 export async function getCustomerStats() {
