@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "prisma generate && next build",
+    "build": "prisma generate && next build && npx opennextjs-cloudflare build --external pg-cloudflare",
     "start": "next start",
     "lint": "eslint",
     "db:generate": "prisma generate",
