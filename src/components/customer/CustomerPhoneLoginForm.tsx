@@ -437,11 +437,11 @@ export function CustomerPhoneLoginForm() {
             </div>
 
             <p className="text-sm text-green-300/80">
-              <span className="font-semibold text-white">
-                {sentPhoneRef.current || `${countryCode} ${phoneNumber}`}
-              </span>{" "}
-              numarasına gönderilen 6 haneli kodu girin.
-            </p>
+  <span className="font-semibold text-white">
+    {`${countryCode} ${phoneNumber}`}
+  </span>{" "}
+  numarasına gönderilen 6 haneli kodu girin.
+</p>
 
             {/* 6-cell OTP input */}
             <div className="flex gap-2 justify-center" onPaste={handleOtpPaste}>
