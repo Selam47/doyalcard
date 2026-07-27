@@ -19,6 +19,23 @@ async function requireAdmin() {
 }
 
 // ─── Dashboard Stats ──────────────────────────────────────────────────────────
+// Tek bir sorgu patladığında tüm admin panelinin çökmemesi için her sorgu
+// kendi hata sınırında çalışır: başarısız olan sorgu detaylı loglanır ve
+// güvenli varsayılan (0) döner. Promise.all burada asla reject olmaz çünkü
+// safeCount hiçbir zaman throw etmez.
+async function safeCount(
+  label: string,
+  query: () => Promise<number>
+): Promise<number> {
+  try {
+    return await query();
+  } catch (error) {
+    // Prisma/DB hatasının detayını kaybetme — Vercel loglarında görünsün.
+    console.error(`Admin stats fetch error [${label}]:`, error);
+    return 0;
+  }
+}
+
 export async function getDashboardStats() {
   await requireAdmin();
 
@@ -31,18 +48,25 @@ export async function getDashboardStats() {
       branches,
       recentOrders,
     ] = await Promise.all([
-      prisma.order.count(),
-      prisma.customer.count(),
-      prisma.reward.count(),
-      prisma.reward.count({ where: { status: "CLAIMED" } }),
-      prisma.branch.count(),
-      prisma.order.count({
-        where: {
-          createdAt: {
-            gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000), // Last 7 days
+      safeCount("totalOrders", () => prisma.order.count()),
+      safeCount("totalCustomers", () => prisma.customer.count()),
+      safeCount("totalRewards", () => prisma.reward.count()),
+      safeCount("claimedRewards", () =>
+        prisma.reward.count({ where: { status: "CLAIMED" } })
+      ),
+      // Dashboard kartı "Aktif Şube" gösteriyor — pasif şubeleri sayma.
+      safeCount("branches", () =>
+        prisma.branch.count({ where: { isActive: true } })
+      ),
+      safeCount("recentOrders", () =>
+        prisma.order.count({
+          where: {
+            createdAt: {
+              gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000), // Last 7 days
+            },
           },
-        },
-      }),
+        })
+      ),
     ]);
 
     return {
@@ -50,13 +74,23 @@ export async function getDashboardStats() {
       totalCustomers,
       totalRewards,
       claimedRewards,
-      pendingRewards: totalRewards - claimedRewards,
+      pendingRewards: Math.max(totalRewards - claimedRewards, 0),
       branches,
       recentOrders,
     };
   } catch (error) {
-    console.error("[getDashboardStats] Error:", error);
-    throw new Error("İstatistikler yüklenemedi");
+    // safeCount sayesinde buraya normalde düşülmez; yine de beklenmedik bir
+    // hata olursa (ör. auth sonrası runtime hatası) paneli çökertme.
+    console.error("Admin stats fetch error:", error);
+    return {
+      totalOrders: 0,
+      totalCustomers: 0,
+      totalRewards: 0,
+      claimedRewards: 0,
+      pendingRewards: 0,
+      branches: 0,
+      recentOrders: 0,
+    };
   }
 }
 
