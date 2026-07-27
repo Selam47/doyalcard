@@ -1,129 +1,56 @@
-# Ekrem Coşkun Döner — Dijital Sadakat Kartı Sistemi
+# 💳 Doyalcard — QR Kodlu Dijital Sadakat Kartı & Kampanya Yönetim Sistemi
 
-QR kodlu dijital pul kartı sistemi. Her etli ekmek siparişinde müşteri pul kazanır; belirli eşiklerde otomatik ödül verilir.
+**Doyalcard**, restoran ve işletmeler için geliştirilmiş; kağıt kart kullanımını ortadan kaldıran, QR kod tabanlı, full-stack bir **Dijital Sadakat ve Ödül Yönetimi Platformudur**.
 
-## Tech Stack
+Müşteriler her siparişlerinde dijital pul kazanır, belirlenen eşik değerlere (örn. 15 pul) ulaştıklarında sistem otomatik olarak hediyeleri tanımlar ve yeni döngüyü başlatır.
 
-| Katman | Teknoloji |
-|---|---|
-| Framework | Next.js 16 (App Router) |
-| Veritabanı | PostgreSQL (Neon.tech) |
-| ORM | Prisma 7 |
-| Auth | NextAuth v5 (Auth.js) + Credentials |
-| UI | shadcn/ui + Tailwind CSS v4 |
-| Toast | Sonner |
-| QR Üretim | qrcode npm |
-| QR Okuma | html5-qrcode |
+---
 
-## Ortam Değişkenleri
+## 🚀 Öne Çıkan Özellikler
 
-`.env.local` dosyasını `.env.example`'dan kopyalayın:
+- 📱 **QR Kod Tabanlı Müşteri Kartı:** Müşteriye özel benzersiz (UUID) dinamik QR kod yapısı.
+- ⚡ **Hızlı Sipariş / Pul İşleme:** Personel paneli üzerinden kamerayla QR tarama veya telefon numarasıyla saniyeler içinde pul ekleme.
+- 🎯 **Dinamik Kampanya Motoru:** Admin panelinden tamamen özelleştirilebilir eşik değerleri (Threshold) ve ödül kuralları.
+- 🔒 **Sıkı Güvenlik ve Yetkilendirme:** NextAuth v5 ile Role-Based Access Control (RBAC) mimarisi.
+- 📊 **Yönetim Paneli (Dashboard):** Şube, personel, müşteri ve aktif kampanya istatistiklerinin takibi.
+- 🛡️ **KVKK Uyumlu Müşteri Kaydı:** Müşteri kayıt süreçlerinde entegre onay mekanizması.
 
-```bash
-cp .env.example .env.local
-```
+---
 
-`.env.local` içeriği:
+## 🛠️ Teknoloji Yığını (Tech Stack)
 
-```env
-# Neon.tech veritabanı (pooled bağlantı)
-DATABASE_URL="postgresql://user:pass@ep-xxx.neon.tech/neondb?sslmode=require"
-
-# Neon.tech veritabanı (doğrudan — migration için)
-DIRECT_URL="postgresql://user:pass@ep-xxx.neon.tech/neondb?sslmode=require"
-
-# NextAuth v5 gizli anahtarı (openssl rand -base64 32 ile üretin)
-AUTH_SECRET="your-secret-key"
-
-# QR kod URL'si için base URL
-NEXT_PUBLIC_BASE_URL="http://localhost:3000"
-```
-
-> **Not:** Prisma CLI araçları (db push, seed) `.env` dosyasını okur; Next.js ise `.env.local` kullanır.
-> Her iki dosyayı da doldurun veya yalnızca `.env` kullanın.
-
-## Kurulum
-
-```bash
-# 1. Bağımlılıkları yükle
-npm install
-
-# 2. Prisma client oluştur
-npm run db:generate
-
-# 3. Veritabanı şemasını gönder (Neon.tech)
-npm run db:push
-
-# 4. Örnek verileri yükle
-npm run db:seed
-
-# 5. Geliştirme sunucusunu başlat
-npm run dev
-```
-
-## Veritabanı Komutları
-
-```bash
-npm run db:generate   # Prisma client'ı yeniden oluştur
-npm run db:push       # Schema'yı DB'ye gönder (migration olmadan)
-npm run db:seed       # Örnek verileri yükle
-npm run db:studio     # Prisma Studio'yu aç
-```
-
-## Giriş Bilgileri (Seed)
-
-| Rol | Email | Şifre |
+| Katman | Teknoloji | Açıklama |
 |---|---|---|
-| Admin | admin@ekremdoner.com | Admin1234! |
-| Personel | personel@ekremdoner.com | Staff1234! |
+| **Framework** | Next.js 16 (App Router) | React Server Components & Server Actions |
+| **Dil** | TypeScript | Type-safe uçtan uca geliştirme |
+| **Veritabanı** | PostgreSQL (Neon.tech) | Serverless & Cloud Database |
+| **ORM** | Prisma 7 | Schema yönetimi ve type-safe sorgular |
+| **Kimlik Doğrulama** | NextAuth v5 (Auth.js) | Session bazlı, Bcrypt hash'li yetkilendirme |
+| **Stil / UI** | Tailwind CSS v4 + shadcn/ui | Modern, responsive ve erişilebilir arayüz |
+| **Bildirimler** | Sonner | Real-time toast bildirimleri |
+| **QR Araçları** | `qrcode` & `html5-qrcode` | QR oluşturma ve cihaz kamerasından tarama |
 
-## Test Müşterileri (Seed)
+---
 
-| Müşteri | Telefon | QR URL |
-|---|---|---|
-| Ali Yılmaz | +905551234567 | /card/aaaaaaaa-0000-0000-0000-000000000001 |
-| Fatma Kaya | +905559876543 | /card/bbbbbbbb-0000-0000-0000-000000000002 |
+## 🛡️ Güvenlik Mimarisi
 
-## Uygulama URL'leri
+- **Sıfır Sızıntı (Zero-Leakage):** Veritabanı kimlik bilgileri, JWT secret ve API anahtarları `.env` yapılandırması altında tutulur ve `.gitignore` kuralı ile sürüm kontrolü dışında bırakılır.
+- **Güvenli Sunucu Eylemleri (Server Actions):** Tüm veri güncelleme ve pul ekleme fonksiyonları arka planda `auth()` oturum kontrolünden ve rol doğrulamasından geçer.
+- **Middleware Koruması:** `/admin` ve `/staff` gibi kritik rotalar yetkisiz erişimlere karşı middleware katmanında engellenir.
+- **Parola Güvenliği:** Personel ve yönetici şifreleri veritabanında **Bcrypt (Cost Factor: 12)** algoritması ile şifrelenerek saklanır.
 
-| URL | Açıklama |
-|---|---|
-| `/login` | Personel / Admin giriş sayfası |
-| `/staff` | QR tarama ve telefon arama |
-| `/staff/register` | Yeni müşteri kayıt formu |
-| `/admin` | Yönetim paneli (dashboard) |
-| `/admin/rules` | Kampanya kuralları CRUD |
-| `/admin/branches` | Şube yönetimi |
-| `/admin/staff` | Personel yönetimi |
-| `/card/[uuid]` | Müşteri sadakat kartı (herkese açık) |
+---
 
-## Kampanya Mantığı
+## 📁 Proje Dizin Yapısı
 
-1. Personel müşterinin QR kodunu tarar veya telefon ile arar
-2. `/card/[uuid]` sayfasında **+1 Etli Ekmek Siparişi** butonuna basar
-3. Sistem `current_cycle_count`'u artırır
-4. `campaign_rules` tablosundan eşleşen kural kontrol edilir:
-   - `threshold == 5` → 1 Ücretsiz Ayran (PENDING)
-   - `threshold == 7` → 1 Ücretsiz Sütlaç (PENDING)
-   - `threshold == 15` → 3 Kişilik Etli Ekmek (PENDING, sonra sıfırlama)
-5. Personel ödülü **Kullandır** butonuyla CLAIMED'e çeker
-
-## Güvenlik
-
-- Tüm Server Actions `auth()` ile session kontrolü yapar
-- Middleware `/staff` ve `/admin` rotalarını korur
-- Bcrypt (cost factor 12) ile şifre hashleme
-- KVKK onayı müşteri kaydında zorunludur
-
-## Production Deployment
-
-```bash
-# Vercel (önerilen)
-npx vercel
-
-# Manuel
-npm run build
-npm start
-```
-
-`NEXT_PUBLIC_BASE_URL`'yi production domain'inizle güncelleyin.
+```text
+doyalcard/
+├── app/                  # Next.js App Router sayfaları ve Server Actions
+│   ├── (auth)/           # Login ve yetkilendirme sayfaları
+│   ├── admin/            # Yönetici paneli (Kurallar, Şubeler, Personel)
+│   ├── staff/            # Personel QR tarama ve müşteri arama paneli
+│   └── card/[uuid]/      # Müşteriye özel dijital kart görünümü (Public)
+├── components/           # UI ve Reusable React bileşenleri
+├── lib/                  # Prisma Client, auth konfigürasyonu ve yardımcı araçlar
+├── prisma/               # Schema dosyası ve seed verileri
+└── public/               # Statik görseller ve varlıklar
