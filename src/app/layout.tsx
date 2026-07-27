@@ -26,8 +26,11 @@ export const metadata: Metadata = {
   ],
   authors: [{ name: "Ekrem Coşkun Döner" }],
   creator: "Ekrem Coşkun Döner",
-  // app/manifest.ts is served automatically by Next.js at /manifest.webmanifest
-  manifest: "/manifest.webmanifest",
+  // NOT: `manifest` alanı bilerek Metadata'dan çıkarıldı.
+  // Next.js Metadata API'si manifest link'ine `crossOrigin` eklemeye izin vermiyor
+  // (yalnızca VERCEL_ENV === "preview" iken otomatik olarak "use-credentials" ekliyor).
+  // Vercel Deployment Protection / auth yönlendirmeleri altında manifest isteğinin
+  // cookie'lerle gitmesi gerektiği için link etiketini <head> içinde elle basıyoruz.
   icons: {
     icon: "/favicon.ico",
     shortcut: "/favicon-32x32.png",
@@ -60,6 +63,19 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="tr" suppressHydrationWarning>
+      <head>
+        {/*
+          Manifest isteği aynı origin'den yapılsa bile tarayıcı varsayılan olarak
+          "no-cors" modunda ve cookie göndermeden ister. Vercel'de deployment
+          protection veya auth middleware devredeyse bu istek 401/302'ye takılır
+          ve PWA kurulamaz. `use-credentials` cookie'lerin gönderilmesini sağlar.
+        */}
+        <link
+          rel="manifest"
+          href="/manifest.webmanifest"
+          crossOrigin="use-credentials"
+        />
+      </head>
       <body className={`${inter.variable} font-sans antialiased`}>
         <div className="relative min-h-screen flex flex-col">
           {children}
