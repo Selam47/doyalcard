@@ -1,4 +1,4 @@
-# 💳 Doyalcard — QR Kodlu Dijital Sadakat Kartı & Kampanya Yönetim Sistemi
+Set-Content -Path README.md -Value '# 💳 Doyalcard — QR Kodlu Dijital Sadakat Kartı & Kampanya Yönetim Sistemi
 
 **Doyalcard**, restoran ve işletmeler için geliştirilmiş; kağıt kart kullanımını ortadan kaldıran, QR kod tabanlı, full-stack bir **Dijital Sadakat ve Ödül Yönetimi Platformudur**.
 
@@ -25,7 +25,7 @@ Müşteriler her siparişlerinde dijital pul kazanır, belirlenen eşik değerle
 | **Dil** | TypeScript | Type-safe uçtan uca geliştirme |
 | **Veritabanı** | PostgreSQL (Neon.tech) | Serverless & Cloud Database |
 | **ORM** | Prisma 7 | Schema yönetimi ve type-safe sorgular |
-| **Kimlik Doğrulama** | NextAuth v5 (Auth.js) | Session bazlı, Bcrypt hash'li yetkilendirme |
+| **Kimlik Doğrulama** | NextAuth v5 (Auth.js) | Session bazlı, Bcrypt hash''li yetkilendirme |
 | **Stil / UI** | Tailwind CSS v4 + shadcn/ui | Modern, responsive ve erişilebilir arayüz |
 | **Bildirimler** | Sonner | Real-time toast bildirimleri |
 | **QR Araçları** | `qrcode` & `html5-qrcode` | QR oluşturma ve cihaz kamerasından tarama |
