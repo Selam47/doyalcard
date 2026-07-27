@@ -6,6 +6,7 @@ import { NextResponse } from "next/server";
 import { getCustomerSession } from "@/lib/customer-session";
 import { prisma } from "@/lib/prisma";
 import { isDbConnectionError } from "@/lib/db-errors";
+import { clampCycleCount, getCampaignConfig } from "@/lib/campaign-rules";
 
 // Reads live campaign_rules + per-customer counters — must never be
 // statically cached.
@@ -42,30 +43,25 @@ export async function GET() {
       return NextResponse.json({ error: "Customer not found" }, { status: 404 });
     }
 
-    // Find the next campaign rule threshold (lowest active rule > currentCycleCount)
-    const nextRule = await prisma.campaignRule.findFirst({
-      where: {
-        isActive: true,
-        threshold: { gt: customer.currentCycleCount },
-      },
-      orderBy: { threshold: "asc" },
-    });
+    // Same single source of truth the card UI uses, so an API consumer can
+    // never disagree with what the customer sees on screen.
+    const { rules, cycleRule, maxStamps } = await getCampaignConfig();
+    const cycleCount = clampCycleCount(customer.currentCycleCount, maxStamps);
 
-    // Fallback: if no rule above current count, get highest active threshold
-    const highestRule = await prisma.campaignRule.findFirst({
-      where: { isActive: true },
-      orderBy: { threshold: "desc" },
-    });
-
-    const targetRule = nextRule ?? highestRule;
+    // Next milestone: the lowest active threshold still ahead of the customer;
+    // once every milestone is passed, the cycle rule itself is the target.
+    const targetRule =
+      rules.find((r) => r.threshold > cycleCount) ?? cycleRule;
 
     return NextResponse.json({
       id: customer.id,
       name: customer.name,
       phone: customer.phone,
       qrUuid: customer.qrUuid,
-      currentCycleCount: customer.currentCycleCount,
+      currentCycleCount: cycleCount,
       lifetimeCount: customer.lifetimeCount,
+      // Authoritative slot count — clients must render "x / maxStamps".
+      maxStamps,
       createdAt: customer.createdAt,
       // No hardcoded fallback: if there are no active campaign rules at all,
       // there is no meaningful "next threshold" to report.

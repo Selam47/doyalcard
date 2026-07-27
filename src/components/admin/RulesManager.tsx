@@ -163,14 +163,14 @@ export function RulesManager({ initialRules }: Props) {
           <form onSubmit={handleCreate} className="grid grid-cols-2 gap-4">
             <div className="space-y-1">
               <label className="text-xs font-medium text-gray-600">
-                Eşik Değeri (1-15) *
+                Eşik Değeri (1-100) *
               </label>
               <input
                 id="rule-threshold"
                 name="threshold"
                 type="number"
                 min={1}
-                max={15}
+                max={100}
                 required
                 className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-400"
               />

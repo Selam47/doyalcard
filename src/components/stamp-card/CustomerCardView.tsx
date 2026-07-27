@@ -2,7 +2,7 @@
 import { maskPhone, formatDate } from "@/lib/utils";
 import { StampGrid } from "./StampGrid";
 import { RewardBadge } from "./RewardBadge";
-import { getCycleLength, type ActiveCampaignRule } from "@/lib/campaign-rules";
+import { clampCycleCount, type ActiveCampaignRule } from "@/lib/campaign-rules";
 
 interface Reward {
   id: string;
@@ -24,12 +24,24 @@ interface Props {
   };
   qrDataUrl: string;
   activeRules: ActiveCampaignRule[];
+  /**
+   * Authoritative stamp-slot count, resolved server-side from the single
+   * active CampaignRule. Passed in (never derived here) so the card, the
+   * staff panel and the dashboard can never disagree.
+   */
+  maxStamps: number;
 }
 
-export function CustomerCardView({ customer, qrDataUrl, activeRules }: Props) {
+export function CustomerCardView({
+  customer,
+  qrDataUrl,
+  activeRules,
+  maxStamps,
+}: Props) {
   const pendingRewards = customer.rewards.filter((r) => r.status === "PENDING");
   const claimedRewards = customer.rewards.filter((r) => r.status === "CLAIMED");
-  const cycleLength = getCycleLength(activeRules);
+  // Legacy rows can sit above a since-lowered threshold — clamp for display.
+  const cycleCount = clampCycleCount(customer.currentCycleCount, maxStamps);
 
   return (
     <div className="space-y-4">
@@ -57,14 +69,13 @@ export function CustomerCardView({ customer, qrDataUrl, activeRules }: Props) {
           <p className="text-gray-500 text-xs font-semibold uppercase tracking-wide mb-4 flex items-center gap-2">
             <span>Mevcut Döngü</span>
             <span className="bg-green-100 text-green-700 px-2 py-0.5 rounded-full">
-              {customer.currentCycleCount}
-              {cycleLength > 0 ? `/${cycleLength}` : ""}
+              {cycleCount}/{maxStamps}
             </span>
           </p>
           <StampGrid
-            currentCount={customer.currentCycleCount}
+            currentCount={cycleCount}
             activeRules={activeRules}
-            totalStamps={cycleLength}
+            maxStamps={maxStamps}
           />
         </div>
 

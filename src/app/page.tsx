@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import Link from "next/link";
-import { getActiveCampaignRules, getCycleLength } from "@/lib/campaign-rules";
+import { getCampaignConfig } from "@/lib/campaign-rules";
 
 // The marketing copy below quotes live campaign thresholds/reward names —
 // never statically cache this page, or it could show stale rewards after
@@ -10,10 +10,11 @@ import { getActiveCampaignRules, getCycleLength } from "@/lib/campaign-rules";
 export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
-  const [session, activeRules] = await Promise.all([
+  const [session, campaign] = await Promise.all([
     auth(),
-    getActiveCampaignRules(),
+    getCampaignConfig(),
   ]);
+  const { rules: activeRules, cycleRule, maxStamps } = campaign;
 
   // ─── Redirect Authenticated Users ─────────────────────────────────────────
   if (session?.user?.role === "ADMIN") {
@@ -24,10 +25,8 @@ export default async function HomePage() {
   }
 
   // ─── Derive Dynamic Marketing Copy From Active Campaign Rules ─────────────
-  const cycleLength = getCycleLength(activeRules);
-  const resetRule = activeRules.find((r) => r.isResetPoint);
-  const easyEarnCopy = resetRule
-    ? `Her etli ekmek siparişinizde otomatik olarak puan kazanırsınız. ${cycleLength} siparişte ${resetRule.rewardName} kazanırsınız!`
+  const easyEarnCopy = cycleRule
+    ? `Her etli ekmek siparişinizde otomatik olarak puan kazanırsınız. ${maxStamps} siparişte ${cycleRule.rewardName} kazanırsınız!`
     : "Her etli ekmek siparişinizde otomatik olarak puan kazanırsınız. Belirli sipariş sayılarında özel ödüller kazanırsınız!";
   const specialRewardsCopy =
     activeRules.length > 0

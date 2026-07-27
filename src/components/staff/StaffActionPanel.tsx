@@ -6,6 +6,7 @@ import { addOrder, removeStamp } from "@/actions/order";
 import { claimReward } from "@/actions/reward";
 import { useRouter } from "next/navigation";
 import { formatDate } from "@/lib/utils";
+import { clampCycleCount } from "@/lib/campaign-rules";
 
 interface PendingReward {
   id: string;
@@ -22,11 +23,18 @@ interface Props {
     lifetimeCount: number;
   };
   pendingRewards: PendingReward[];
-  cycleLength: number;
+  /**
+   * Authoritative stamp-slot count from the single active CampaignRule,
+   * resolved server-side. The panel NEVER derives its own limit, so the
+   * "0/maxStamps" counter here always matches the customer's card.
+   */
+  maxStamps: number;
 }
 
-export function StaffActionPanel({ customer, pendingRewards, cycleLength }: Props) {
+export function StaffActionPanel({ customer, pendingRewards, maxStamps }: Props) {
   const router = useRouter();
+  // Legacy rows may exceed a since-lowered threshold — clamp for display.
+  const cycleCount = clampCycleCount(customer.currentCycleCount, maxStamps);
   const [isPending, startTransition] = useTransition();
   const [isRemoving, startRemoveTransition] = useTransition();
   const [isClaimingId, setIsClaimingId] = useState<string | null>(null);
@@ -51,7 +59,9 @@ export function StaffActionPanel({ customer, pendingRewards, cycleLength }: Prop
           });
         }
       } else {
-        toast.success(`✅ Sipariş eklendi. Toplam: ${result.lifetimeCount}`);
+        toast.success(
+          `✅ Sipariş eklendi. Döngü: ${result.newCycleCount}/${result.maxStamps} · Toplam: ${result.lifetimeCount}`
+        );
       }
 
       router.refresh();
@@ -66,7 +76,9 @@ export function StaffActionPanel({ customer, pendingRewards, cycleLength }: Prop
           toast.error(result.error);
           return;
         }
-        toast.success(`➖ Damga silindi. Mevcut döngü: ${result.newCycleCount}`);
+        toast.success(
+          `➖ Damga silindi. Döngü: ${result.newCycleCount}/${result.maxStamps} · Toplam: ${result.lifetimeCount}`
+        );
         router.refresh();
       } catch {
         toast.error("Damga silinemedi. Lütfen tekrar deneyin.");
@@ -102,10 +114,8 @@ export function StaffActionPanel({ customer, pendingRewards, cycleLength }: Prop
         <div className="grid grid-cols-2 gap-3">
           <div className="bg-green-50 rounded-xl p-4 text-center">
             <div className="text-3xl font-extrabold text-green-700">
-              {customer.currentCycleCount}
-              {cycleLength > 0 && (
-                <span className="text-lg text-green-400">/{cycleLength}</span>
-              )}
+              {cycleCount}
+              <span className="text-lg text-green-400">/{maxStamps}</span>
             </div>
             <div className="text-xs text-gray-500 mt-1">Mevcut Döngü</div>
           </div>
@@ -141,7 +151,11 @@ export function StaffActionPanel({ customer, pendingRewards, cycleLength }: Prop
         <button
           id="remove-stamp-btn"
           onClick={handleRemoveStamp}
-          disabled={isPending || isRemoving || customer.currentCycleCount === 0}
+          disabled={
+            isPending ||
+            isRemoving ||
+            (cycleCount === 0 && customer.lifetimeCount === 0)
+          }
           className="w-full py-2.5 px-6 rounded-xl bg-white border-2 border-red-200 hover:bg-red-50 text-red-600 font-semibold text-sm shadow-sm transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 active:scale-95"
         >
           {isRemoving ? (

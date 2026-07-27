@@ -4,6 +4,7 @@
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/lib/auth";
 import { revalidatePath } from "next/cache";
+import { revalidateCampaignSurfaces } from "@/lib/revalidate";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
 import { Prisma } from "@prisma/client";
@@ -78,12 +79,17 @@ export async function getCampaignRules() {
   }
 }
 
+// Upper bound is a sanity limit only — the campaign length is fully
+// admin-configurable (10, 15, 20, 40 ...) and every card + staff counter
+// follows whatever is set here. It must NOT be pinned to 15.
+const MAX_RULE_THRESHOLD = 100;
+
 const RuleSchema = z.object({
   threshold: z.coerce
     .number()
     .int()
     .min(1, "Eşik değeri en az 1 olmalı")
-    .max(15, "Eşik değeri en fazla 15 olabilir"),
+    .max(MAX_RULE_THRESHOLD, `Eşik değeri en fazla ${MAX_RULE_THRESHOLD} olabilir`),
   rewardName: z
     .string()
     .min(2, "Ödül adı en az 2 karakter olmalı")
@@ -118,7 +124,8 @@ export async function createCampaignRule(formData: FormData) {
     }
 
     await prisma.campaignRule.create({ data: parsed.data });
-    revalidatePath("/admin/rules");
+    // A rule change alters maxStamps for EVERY customer — purge all cards.
+    revalidateCampaignSurfaces();
     return { success: true };
   } catch (error) {
     console.error("[createCampaignRule] Error:", error);
@@ -157,7 +164,7 @@ export async function updateCampaignRule(id: string, formData: FormData) {
       data: parsed.data,
     });
 
-    revalidatePath("/admin/rules");
+    revalidateCampaignSurfaces();
     return { success: true };
   } catch (error) {
     console.error("[updateCampaignRule] Error:", error);
@@ -187,9 +194,9 @@ export async function deleteCampaignRule(id: string) {
 
     const deleted = await prisma.campaignRule.delete({ where: { id } });
 
-    // Purge any cached RSC payload for the rules page so a subsequent
+    // Purge every cached RSC payload that quotes a threshold so a subsequent
     // router.refresh() (or a hard page reload) reliably reflects the delete.
-    revalidatePath("/admin/rules");
+    revalidateCampaignSurfaces();
 
     return { success: true, id: deleted.id };
   } catch (error) {
@@ -202,7 +209,7 @@ export async function deleteCampaignRule(id: string) {
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === "P2025"
     ) {
-      revalidatePath("/admin/rules");
+      revalidateCampaignSurfaces();
       return { success: true, id };
     }
 
@@ -219,7 +226,8 @@ export async function toggleRuleActive(id: string, isActive: boolean) {
       data: { isActive },
     });
 
-    revalidatePath("/admin/rules");
+    // Activating/deactivating a rule can change maxStamps globally.
+    revalidateCampaignSurfaces();
     return { success: true };
   } catch (error) {
     console.error("[toggleRuleActive] Error:", error);

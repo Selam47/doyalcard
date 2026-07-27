@@ -1,11 +1,12 @@
 // src/components/stamp-card/StampGrid.tsx
 import { cn } from "@/lib/utils";
-import { DEFAULT_CYCLE_LENGTH, type ActiveCampaignRule } from "@/lib/campaign-rules";
+import { clampCycleCount, type ActiveCampaignRule } from "@/lib/campaign-rules";
 
-// Visual styling for milestone stamps is generated from the active
-// CampaignRule rows (threshold + rewardName + isResetPoint) — there is no
-// hardcoded stamp count or reward list here. If admins add, remove, or
-// reorder rules in /admin/rules, this grid reflects it automatically.
+// Milestone styling is generated from the active CampaignRule rows
+// (threshold + rewardName + isResetPoint). There is NO hardcoded stamp count
+// and no fallback here — `maxStamps` is resolved once, server-side, by
+// getCampaignConfig() and passed down, so every card in the system renders
+// the exact same number of slots.
 const RESET_STYLE = { color: "bg-amber-400 ring-amber-500", emoji: "🫓" };
 const MILESTONE_PALETTE: { color: string; emoji: string }[] = [
   { color: "bg-green-400 ring-green-500", emoji: "🥛" },
@@ -14,12 +15,6 @@ const MILESTONE_PALETTE: { color: string; emoji: string }[] = [
   { color: "bg-pink-400 ring-pink-500", emoji: "🍰" },
   { color: "bg-teal-400 ring-teal-500", emoji: "🍪" },
 ];
-
-// Fallback cycle length used only when there are no active rules at all
-// (e.g. a fresh install before an admin has configured any campaign).
-// Sourced from the shared campaign-rules default so the grid, the cycle
-// label, and the backend all agree on the same absolute default (15).
-const DEFAULT_TOTAL_STAMPS = DEFAULT_CYCLE_LENGTH;
 
 interface Milestone {
   color: string;
@@ -30,15 +25,23 @@ interface Milestone {
 interface Props {
   currentCount: number;
   activeRules: ActiveCampaignRule[];
-  totalStamps: number;
+  /** Authoritative slot count from the active campaign rule. Always > 0. */
+  maxStamps: number;
 }
 
-function buildMilestones(rules: ActiveCampaignRule[]): Record<number, Milestone> {
+function buildMilestones(
+  rules: ActiveCampaignRule[],
+  maxStamps: number
+): Record<number, Milestone> {
   const milestones: Record<number, Milestone> = {};
   let paletteIndex = 0;
 
   for (const rule of rules) {
-    if (rule.isResetPoint) {
+    // A rule whose threshold sits outside the active cycle has no slot to
+    // render into — skip it instead of drawing a phantom stamp.
+    if (rule.threshold < 1 || rule.threshold > maxStamps) continue;
+
+    if (rule.isResetPoint || rule.threshold === maxStamps) {
       milestones[rule.threshold] = { ...RESET_STYLE, label: rule.rewardName };
     } else {
       const style = MILESTONE_PALETTE[paletteIndex % MILESTONE_PALETTE.length];
@@ -50,17 +53,32 @@ function buildMilestones(rules: ActiveCampaignRule[]): Record<number, Milestone>
   return milestones;
 }
 
-export function StampGrid({ currentCount, activeRules, totalStamps }: Props) {
-  const milestones = buildMilestones(activeRules);
-  const gridSize = totalStamps > 0 ? totalStamps : DEFAULT_TOTAL_STAMPS;
+/**
+ * Static class strings (Tailwind cannot see interpolated names) chosen from
+ * the slot count so a 40-stamp campaign stays readable on a phone.
+ */
+function gridColumnsClass(maxStamps: number): string {
+  if (maxStamps <= 12) return "grid-cols-4 sm:grid-cols-6";
+  if (maxStamps <= 24) return "grid-cols-5 sm:grid-cols-8";
+  return "grid-cols-6 sm:grid-cols-10";
+}
+
+export function StampGrid({ currentCount, activeRules, maxStamps }: Props) {
+  const milestones = buildMilestones(activeRules, maxStamps);
+  // Legacy rows may hold a count above the active threshold; never paint more
+  // stamps than the grid has. addOrder/removeStamp heal the stored value.
+  const filledCount = clampCycleCount(currentCount, maxStamps);
+  const legendRules = activeRules.filter(
+    (r) => r.threshold >= 1 && r.threshold <= maxStamps
+  );
 
   return (
     <div className="space-y-4">
       {/* Stamp Grid */}
-      <div className="grid grid-cols-4 gap-3 sm:grid-cols-6">
-        {Array.from({ length: gridSize }, (_, i) => {
+      <div className={cn("grid gap-3", gridColumnsClass(maxStamps))}>
+        {Array.from({ length: maxStamps }, (_, i) => {
           const stampNumber = i + 1;
-          const isFilled = stampNumber <= currentCount;
+          const isFilled = stampNumber <= filledCount;
           const milestone = milestones[stampNumber];
 
           return (
@@ -115,13 +133,13 @@ export function StampGrid({ currentCount, activeRules, totalStamps }: Props) {
       </div>
 
       {/* Milestone Legend */}
-      {activeRules.length > 0 && (
+      {legendRules.length > 0 && (
         <div className="flex flex-wrap gap-3 text-xs text-gray-600">
           <div className="flex items-center gap-1.5">
             <span className="w-3 h-3 rounded-full bg-green-500 inline-block shadow-sm" />
             <span>Normal Puan</span>
           </div>
-          {activeRules.map((rule) => {
+          {legendRules.map((rule) => {
             const milestone = milestones[rule.threshold];
             if (!milestone) return null;
             return (

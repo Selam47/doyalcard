@@ -11,7 +11,7 @@ import { getCustomerById } from "@/actions/customer";
 import { generateQrDataUrl } from "@/lib/qr";
 import { CustomerCardView } from "@/components/stamp-card/CustomerCardView";
 import { CustomerPageShell } from "@/components/customer/CustomerPageShell";
-import { getActiveCampaignRules } from "@/lib/campaign-rules";
+import { getCampaignConfig } from "@/lib/campaign-rules";
 
 // Customer stamp progress depends on live campaign rules and order counts —
 // never statically cache this page.
@@ -36,9 +36,10 @@ export default async function CustomerDashboardPage() {
   }
 
   // Generate the QR data URL now that we have the qrUuid
-  const [qrCode, activeRules] = await Promise.all([
+  // Same single source of truth as /card/[uuid] — identical slot count.
+  const [qrCode, campaign] = await Promise.all([
     generateQrDataUrl(customer.qrUuid),
-    getActiveCampaignRules(),
+    getCampaignConfig(),
   ]);
 
   // ── Render: CustomerPageShell (header+logout) + CustomerCardView (shared UI) ─
@@ -51,7 +52,8 @@ export default async function CustomerDashboardPage() {
       <CustomerCardView
         customer={customer}
         qrDataUrl={qrCode}
-        activeRules={activeRules}
+        activeRules={campaign.rules}
+        maxStamps={campaign.maxStamps}
       />
     </CustomerPageShell>
   );

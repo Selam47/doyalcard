@@ -3,7 +3,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/lib/auth";
-import { revalidatePath } from "next/cache";
+import { revalidateStampSurfaces } from "@/lib/revalidate";
 import { Prisma } from "@prisma/client";
 import { isDbConnectionError } from "@/lib/db-errors";
 
@@ -60,6 +60,7 @@ export async function claimReward(
         return {
           rewardName: reward.rule.rewardName,
           customerName: reward.customer.name,
+          qrUuid: reward.customer.qrUuid,
         };
       },
       {
@@ -70,9 +71,9 @@ export async function claimReward(
     );
 
     // ─── 7. Revalidate Paths ───────────────────────────────────────────────────
-    revalidatePath("/staff");
-    revalidatePath("/card");
-    revalidatePath("/admin");
+    // NOTE: revalidatePath("/card") never matched the dynamic /card/[uuid]
+    // route — revalidateStampSurfaces() handles both forms.
+    revalidateStampSurfaces(result.qrUuid);
 
     console.log(
       `[claimReward] Success: ${result.rewardName} claimed for ${result.customerName}`
