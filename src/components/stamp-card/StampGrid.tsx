@@ -1,6 +1,6 @@
 // src/components/stamp-card/StampGrid.tsx
 import { cn } from "@/lib/utils";
-import type { ActiveCampaignRule } from "@/lib/campaign-rules";
+import { DEFAULT_CYCLE_LENGTH, type ActiveCampaignRule } from "@/lib/campaign-rules";
 
 // Visual styling for milestone stamps is generated from the active
 // CampaignRule rows (threshold + rewardName + isResetPoint) — there is no
@@ -17,7 +17,9 @@ const MILESTONE_PALETTE: { color: string; emoji: string }[] = [
 
 // Fallback cycle length used only when there are no active rules at all
 // (e.g. a fresh install before an admin has configured any campaign).
-const DEFAULT_TOTAL_STAMPS = 10;
+// Sourced from the shared campaign-rules default so the grid, the cycle
+// label, and the backend all agree on the same absolute default (15).
+const DEFAULT_TOTAL_STAMPS = DEFAULT_CYCLE_LENGTH;
 
 interface Milestone {
   color: string;

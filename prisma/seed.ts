@@ -69,7 +69,7 @@ async function main() {
     },
     {
       id: "rule-003",
-      threshold: 11,
+      threshold: 15,
       rewardName: "1 Etli Ekmek Kazandınız",
       isResetPoint: true,
       isActive: true,
@@ -142,7 +142,7 @@ async function main() {
     }
   }
 
-  // ─── 6. Mock Customer 2: Fatma Kaya (14 orders, completed 1 full cycle) ────
+  // ─── 6. Mock Customer 2: Fatma Kaya (17 orders, completed 1 full cycle) ────
   const customer2 = await prisma.customer.upsert({
     where: { phone: "+905559876543" },
     update: {},
@@ -151,16 +151,16 @@ async function main() {
       name: "Fatma Kaya",
       phone: "+905559876543",
       qrUuid: "bbbbbbbb-0000-0000-0000-000000000002",
-      currentCycleCount: 3, // Completed 1 cycle (11) + 3 more
-      lifetimeCount: 14,
+      currentCycleCount: 2, // Completed 1 cycle (15) + 2 more
+      lifetimeCount: 17,
       kvkkConsent: true,
       branchId: branch.id,
     },
   });
   console.log(`✅ Customer 2: ${customer2.name} (${customer2.phone})`);
 
-  // Create 14 orders for customer 2
-  for (let i = 1; i <= 14; i++) {
+  // Create 17 orders for customer 2
+  for (let i = 1; i <= 17; i++) {
     const order = await prisma.order.upsert({
       where: { id: `order-c2-${i.toString().padStart(3, "0")}` },
       update: {},
@@ -169,11 +169,11 @@ async function main() {
         customerId: customer2.id,
         branchId: branch.id,
         staffId: staff.id,
-        createdAt: new Date(Date.now() - (15 - i) * 24 * 60 * 60 * 1000),
+        createdAt: new Date(Date.now() - (18 - i) * 24 * 60 * 60 * 1000),
       },
     });
 
-    // Milestone rewards for first cycle (orders 1-11)
+    // Milestone rewards for first cycle (orders 1-15)
     if (i === 5) {
       const ayranRule = await prisma.campaignRule.findUnique({
         where: { threshold: 5 },
@@ -212,9 +212,9 @@ async function main() {
         });
         console.log(`   ⭐ Reward: ${sutlacRule.rewardName} (CLAIMED)`);
       }
-    } else if (i === 11) {
+    } else if (i === 15) {
       const grandRule = await prisma.campaignRule.findUnique({
-        where: { threshold: 11 },
+        where: { threshold: 15 },
       });
       if (grandRule) {
         await prisma.reward.upsert({
@@ -251,7 +251,7 @@ async function main() {
     "   Fatma Kaya  → /card/bbbbbbbb-0000-0000-0000-000000000002"
   );
   console.log(
-    "      (14 lifetime orders, 3 current cycle, 3 claimed rewards)"
+    "      (17 lifetime orders, 2 current cycle, 3 claimed rewards)"
   );
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 }

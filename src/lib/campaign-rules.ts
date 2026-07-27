@@ -33,15 +33,24 @@ export async function getActiveCampaignRules(): Promise<ActiveCampaignRule[]> {
 }
 
 /**
+ * The absolute default stamp threshold used only when there are no active
+ * campaign rules in the database at all (e.g. a fresh install before an
+ * admin has configured any campaign). This is the sole hardcoded fallback
+ * in the system — every other threshold must come from the `campaign_rules`
+ * table.
+ */
+export const DEFAULT_CYCLE_LENGTH = 15;
+
+/**
  * The length of one full stamp cycle — i.e. the threshold at which the
  * customer's current_cycle_count resets to 0 (see addOrder in
  * src/actions/order.ts). Falls back to the highest active threshold if no
- * rule is flagged as a reset point, and to 0 if there are no active rules
- * at all (caller should handle that case gracefully, e.g. hide the grid).
+ * rule is flagged as a reset point, and to DEFAULT_CYCLE_LENGTH (15) if
+ * there are no active rules at all.
  */
 export function getCycleLength(rules: ActiveCampaignRule[]): number {
   const resetRule = rules.find((r) => r.isResetPoint);
   if (resetRule) return resetRule.threshold;
   if (rules.length > 0) return Math.max(...rules.map((r) => r.threshold));
-  return 0;
+  return DEFAULT_CYCLE_LENGTH;
 }

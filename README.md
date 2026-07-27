@@ -105,7 +105,7 @@ npm run db:studio     # Prisma Studio'yu aç
 4. `campaign_rules` tablosundan eşleşen kural kontrol edilir:
    - `threshold == 5` → 1 Ücretsiz Ayran (PENDING)
    - `threshold == 7` → 1 Ücretsiz Sütlaç (PENDING)
-   - `threshold == 11` → 3 Kişilik Etli Ekmek (PENDING, sonra sıfırlama)
+   - `threshold == 15` → 3 Kişilik Etli Ekmek (PENDING, sonra sıfırlama)
 5. Personel ödülü **Kullandır** butonuyla CLAIMED'e çeker
 
 ## Güvenlik
