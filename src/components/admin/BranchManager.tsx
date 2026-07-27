@@ -16,22 +16,40 @@ export function BranchManager({ initialBranches }: { initialBranches: Branch[] }
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [showForm, setShowForm] = useState(false);
+  const [branches, setBranches] = useState<Branch[]>(initialBranches);
+  const [syncedBranches, setSyncedBranches] = useState(initialBranches);
+  if (initialBranches !== syncedBranches) {
+    setSyncedBranches(initialBranches);
+    setBranches(initialBranches);
+  }
 
   function handleCreate(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
     startTransition(async () => {
       const r = await createBranch(formData);
-      if (r?.success === false) toast.error(r.error);
-      else { toast.success("Şube oluşturuldu"); setShowForm(false); router.refresh(); }
+      if (!r?.success) {
+        toast.error(r?.error ?? "Şube oluşturulamadı");
+        return;
+      }
+      toast.success("Şube oluşturuldu");
+      setShowForm(false);
+      router.refresh();
     });
   }
 
   function handleDelete(id: string, name: string) {
     if (!confirm(`"${name}" şubesini silmek istediğinizden emin misiniz?`)) return;
     startTransition(async () => {
-      await deleteBranch(id);
-      toast.success("Şube silindi");
+      // deleteBranch refuses when the branch still has staff/customers —
+      // surface that instead of claiming success unconditionally.
+      const r = await deleteBranch(id);
+      if (!r?.success) {
+        toast.error(r?.error ?? "Şube silinemedi");
+        return;
+      }
+      setBranches((prev) => prev.filter((b) => b.id !== id));
+      toast.success(`${name} silindi`);
       router.refresh();
     });
   }
@@ -39,7 +57,7 @@ export function BranchManager({ initialBranches }: { initialBranches: Branch[] }
   return (
     <div className="space-y-4">
       <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-3">
-        {initialBranches.map((branch) => (
+        {branches.map((branch) => (
           <div key={branch.id} className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
             <div className="flex items-start justify-between">
               <div>

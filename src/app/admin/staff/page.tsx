@@ -2,12 +2,17 @@
 import type { Metadata } from "next";
 
 import { getStaffUsers, getBranches } from "@/actions/admin";
+import { auth } from "@/lib/auth";
 import { StaffManager } from "@/components/admin/StaffManager";
 
 export const metadata: Metadata = { title: "Personel Yönetimi" };
 
 export default async function StaffManagementPage() {
-  const [users, branches] = await Promise.all([getStaffUsers(), getBranches()]);
+  const [session, users, branches] = await Promise.all([
+    auth(),
+    getStaffUsers(),
+    getBranches(),
+  ]);
   return (
     <div className="space-y-6">
       <div>
@@ -17,6 +22,7 @@ export default async function StaffManagementPage() {
       <StaffManager
         initialUsers={users}
         branches={branches.map((b) => ({ id: b.id, name: b.name }))}
+        currentUserId={session?.user?.id}
       />
     </div>
   );
