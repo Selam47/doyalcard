@@ -149,3 +149,87 @@ export async function addOrder(customerId: string): Promise<AddOrderResult> {
     };
   }
 }
+
+export type RemoveStampResult =
+  | { success: true; newCycleCount: number }
+  | { success: false; error: string };
+
+/**
+ * Manual correction: decrement a customer's current_cycle_count by 1
+ * (Staff/Admin only). Used to fix cashier mis-scans/double-taps.
+ *
+ * Note: this only adjusts the cycle counter — it intentionally does NOT
+ * touch lifetimeCount, and does not delete/undo the underlying Order or
+ * any Reward that may have already been granted. It's a lightweight
+ * correction tool, not a full "undo last order" action.
+ */
+export async function removeStamp(customerId: string): Promise<RemoveStampResult> {
+  // ─── 1. Authentication & Authorization ─────────────────────────────────────
+  const session = await auth();
+  if (!session?.user || !["STAFF", "ADMIN"].includes(session.user.role)) {
+    return { success: false, error: "Yetkisiz erişim" };
+  }
+
+  // ─── 2. Input Validation ───────────────────────────────────────────────────
+  if (!customerId || typeof customerId !== "string") {
+    return { success: false, error: "Geçersiz müşteri kimliği" };
+  }
+
+  try {
+    const result = await prisma.$transaction(
+      async (tx) => {
+        // ─── 3. Verify Customer Exists ─────────────────────────────────────────
+        const customer = await tx.customer.findUnique({
+          where: { id: customerId },
+          select: { id: true, currentCycleCount: true },
+        });
+
+        if (!customer) {
+          throw new Error("CUSTOMER_NOT_FOUND");
+        }
+
+        // ─── 4. Compute New Count (never below 0) ──────────────────────────────
+        const newCycleCount = Math.max(0, customer.currentCycleCount - 1);
+
+        // ─── 5. Update Customer Counter ─────────────────────────────────────────
+        await tx.customer.update({
+          where: { id: customer.id },
+          data: { currentCycleCount: newCycleCount },
+        });
+
+        return { newCycleCount };
+      },
+      {
+        maxWait: 5000,
+        timeout: 10000,
+        isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+      }
+    );
+
+    // ─── 6. Revalidate Paths ────────────────────────────────────────────────────
+    revalidatePath(`/card`);
+    revalidatePath(`/staff`);
+    revalidatePath(`/admin`);
+
+    return { success: true, ...result };
+  } catch (error) {
+    // ─── 7. Error Handling ──────────────────────────────────────────────────────
+    console.error("[removeStamp] Error:", error);
+
+    if (error instanceof Error && error.message === "CUSTOMER_NOT_FOUND") {
+      return { success: false, error: "Müşteri bulunamadı" };
+    }
+
+    if (isDbConnectionError(error)) {
+      return {
+        success: false,
+        error: "Veritabanı bağlantısı zaman aşımına uğradı. Lütfen tekrar deneyin.",
+      };
+    }
+
+    return {
+      success: false,
+      error: "Damga silinemedi. Lütfen tekrar deneyin.",
+    };
+  }
+}

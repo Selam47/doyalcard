@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { toast } from "sonner";
-import { addOrder } from "@/actions/order";
+import { addOrder, removeStamp } from "@/actions/order";
 import { claimReward } from "@/actions/reward";
 import { useRouter } from "next/navigation";
 import { formatDate } from "@/lib/utils";
@@ -28,6 +28,7 @@ interface Props {
 export function StaffActionPanel({ customer, pendingRewards, cycleLength }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
+  const [isRemoving, startRemoveTransition] = useTransition();
   const [isClaimingId, setIsClaimingId] = useState<string | null>(null);
 
   function handleAddOrder() {
@@ -54,6 +55,22 @@ export function StaffActionPanel({ customer, pendingRewards, cycleLength }: Prop
       }
 
       router.refresh();
+    });
+  }
+
+  function handleRemoveStamp() {
+    startRemoveTransition(async () => {
+      try {
+        const result = await removeStamp(customer.id);
+        if (!result.success) {
+          toast.error(result.error);
+          return;
+        }
+        toast.success(`➖ Damga silindi. Mevcut döngü: ${result.newCycleCount}`);
+        router.refresh();
+      } catch {
+        toast.error("Damga silinemedi. Lütfen tekrar deneyin.");
+      }
     });
   }
 
@@ -104,7 +121,7 @@ export function StaffActionPanel({ customer, pendingRewards, cycleLength }: Prop
         <button
           id="add-order-btn"
           onClick={handleAddOrder}
-          disabled={isPending}
+          disabled={isPending || isRemoving}
           className="w-full py-4 px-6 rounded-2xl bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 text-white font-bold text-lg shadow-lg shadow-green-900/30 transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-3 active:scale-95"
         >
           {isPending ? (
@@ -116,6 +133,26 @@ export function StaffActionPanel({ customer, pendingRewards, cycleLength }: Prop
             <>
               <span className="text-2xl">🫓</span>
               +1 Etli Ekmek Siparişi
+            </>
+          )}
+        </button>
+
+        {/* Manual correction: -1 stamp */}
+        <button
+          id="remove-stamp-btn"
+          onClick={handleRemoveStamp}
+          disabled={isPending || isRemoving || customer.currentCycleCount === 0}
+          className="w-full py-2.5 px-6 rounded-xl bg-white border-2 border-red-200 hover:bg-red-50 text-red-600 font-semibold text-sm shadow-sm transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 active:scale-95"
+        >
+          {isRemoving ? (
+            <>
+              <span className="animate-spin inline-block w-4 h-4 border-2 border-red-400 border-t-transparent rounded-full" />
+              İşleniyor...
+            </>
+          ) : (
+            <>
+              <span>➖</span>
+              -1 Damga Düzeltme
             </>
           )}
         </button>
