@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "sonner";
@@ -10,13 +10,14 @@ const inter = Inter({
 
 export const metadata: Metadata = {
   title: {
-    template: "%s | Ekrem Coşkun Döner",
-    default: "Ekrem Coşkun Döner — Sadakat Kartı",
+    template: "%s | Doyalcard",
+    default: "Doyalcard",
   },
   description:
     "Ekrem Coşkun Döner dijital sadakat kartı sistemi. Her etli ekmek siparişinizde puan kazanın, ödüller toplayın!",
   keywords: [
     "ekrem coşkun döner",
+    "doyalcard",
     "sadakat kartı",
     "dijital kart",
     "etli ekmek",
@@ -25,6 +26,18 @@ export const metadata: Metadata = {
   ],
   authors: [{ name: "Ekrem Coşkun Döner" }],
   creator: "Ekrem Coşkun Döner",
+  // app/manifest.ts is served automatically by Next.js at /manifest.webmanifest
+  manifest: "/manifest.webmanifest",
+  icons: {
+    icon: "/favicon.ico",
+    shortcut: "/favicon-32x32.png",
+    apple: "/apple-touch-icon.png",
+  },
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "Doyalcard",
+  },
   openGraph: {
     type: "website",
     locale: "tr_TR",
@@ -32,6 +45,12 @@ export const metadata: Metadata = {
     description: "Her etli ekmek siparişinizde puan kazanın, ödüller toplayın!",
     siteName: "Ekrem Coşkun Döner",
   },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#0B2B1B",
+  width: "device-width",
+  initialScale: 1,
 };
 
 export default function RootLayout({

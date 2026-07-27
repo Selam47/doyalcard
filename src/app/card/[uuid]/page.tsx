@@ -6,6 +6,7 @@ import { auth } from "@/lib/auth";
 import { getCustomerByUuid } from "@/actions/customer";
 import { CustomerCardView } from "@/components/stamp-card/CustomerCardView";
 import { StaffActionPanel } from "@/components/staff/StaffActionPanel";
+import { InstallPrompt } from "@/components/customer/InstallPrompt";
 import { generateQrDataUrl } from "@/lib/qr";
 import { getCampaignConfig } from "@/lib/campaign-rules.server";
 
@@ -58,6 +59,9 @@ export default async function CardPage({ params }: Props) {
       </header>
 
       <main className="max-w-2xl mx-auto px-4 pb-8 space-y-4">
+        {/* Non-intrusive "Ana Ekrana Ekle" (Add to Home Screen) banner */}
+        <InstallPrompt />
+
         {/* Always show the customer card */}
         <CustomerCardView
           customer={customer}
