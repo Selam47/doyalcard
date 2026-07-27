@@ -63,20 +63,6 @@ Müşteriler her siparişlerinde dijital pul kazanır; belirlenen eşik değerle
 
 ---
 
-## 🖼️ Ekran Görüntüleri
-
-> Aşağıdaki alanlara projenin gerçek ekran görüntülerini ekleyin. `docs/screenshots/` klasörü oluşturup görselleri oraya koyduktan sonra yolları güncellemeniz yeterli.
-
-<div align="center">
-
-| Müşteri Kartı | Personel Paneli | Admin Dashboard |
-|:---:|:---:|:---:|
-| ![Müşteri Kartı](docs/screenshots/customer-card.png) | ![Personel Paneli](docs/screenshots/staff-panel.png) | ![Admin Dashboard](docs/screenshots/admin-dashboard.png) |
-
-</div>
-
----
-
 ## 🛠️ Teknoloji Yığını
 
 | Katman | Teknoloji | Açıklama |
