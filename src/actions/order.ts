@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { auth } from "@/lib/auth";
 import { revalidatePath } from "next/cache";
 import { Prisma } from "@prisma/client";
+import { isDbConnectionError } from "@/lib/db-errors";
 
 export type AddOrderResult =
   | {
@@ -133,6 +134,13 @@ export async function addOrder(customerId: string): Promise<AddOrderResult> {
       if (error.message.includes("Unique constraint")) {
         return { success: false, error: "Bu sipariş zaten kaydedildi" };
       }
+    }
+
+    if (isDbConnectionError(error)) {
+      return {
+        success: false,
+        error: "Veritabanı bağlantısı zaman aşımına uğradı. Lütfen tekrar deneyin.",
+      };
     }
 
     return {

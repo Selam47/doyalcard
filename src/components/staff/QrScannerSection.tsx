@@ -54,7 +54,6 @@ export function QrScannerSection() {
     return () => {
       stopScanner();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (

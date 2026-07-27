@@ -4,6 +4,13 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// NOTE: Prisma 7 ships driver adapters as stable (no `previewFeatures` flag
+// needed) and no longer allows `url` / `directUrl` in the datasource block —
+// connection strings are configured in exactly two places instead:
+//   - prisma.config.ts  → DIRECT_URL, used by the CLI (migrate/db push/studio)
+//   - src/lib/prisma.ts → DATABASE_URL (pooled), used by the generated
+//     client's `@prisma/adapter-pg` driver adapter at runtime.
+// See https://pris.ly/d/config-datasource
 datasource db {
   provider = "postgresql"
 }

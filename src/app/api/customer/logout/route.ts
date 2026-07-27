@@ -2,6 +2,7 @@
 // Clears the customer session cookie.
 
 import { NextResponse } from "next/server";
+
 import { clearCustomerSession } from "@/lib/customer-session";
 
 export async function POST() {

@@ -1,12 +1,19 @@
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import Link from "next/link";
+import { getActiveCampaignRules, getCycleLength } from "@/lib/campaign-rules";
 
+// The marketing copy below quotes live campaign thresholds/reward names —
+// never statically cache this page, or it could show stale rewards after
+// an admin changes /admin/rules.
+export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
-  const session = await auth();
+  const [session, activeRules] = await Promise.all([
+    auth(),
+    getActiveCampaignRules(),
+  ]);
 
   // ─── Redirect Authenticated Users ─────────────────────────────────────────
   if (session?.user?.role === "ADMIN") {
@@ -15,6 +22,19 @@ export default async function HomePage() {
   if (session?.user?.role === "STAFF") {
     redirect("/staff");
   }
+
+  // ─── Derive Dynamic Marketing Copy From Active Campaign Rules ─────────────
+  const cycleLength = getCycleLength(activeRules);
+  const resetRule = activeRules.find((r) => r.isResetPoint);
+  const easyEarnCopy = resetRule
+    ? `Her etli ekmek siparişinizde otomatik olarak puan kazanırsınız. ${cycleLength} siparişte ${resetRule.rewardName} kazanırsınız!`
+    : "Her etli ekmek siparişinizde otomatik olarak puan kazanırsınız. Belirli sipariş sayılarında özel ödüller kazanırsınız!";
+  const specialRewardsCopy =
+    activeRules.length > 0
+      ? `${activeRules
+          .map((r) => `${r.threshold} siparişte ${r.rewardName}`)
+          .join(", ")} kazanın!`
+      : "Sipariş sayınız arttıkça özel ödüller kazanın!";
 
   // ─── Landing Page for Unauthenticated Users ───────────────────────────────
   return (
@@ -76,8 +96,7 @@ export default async function HomePage() {
             </CardHeader>
             <CardContent>
               <CardDescription className="text-base">
-                Her etli ekmek siparişinizde otomatik olarak puan kazanırsınız. 
-                11 siparişte büyük ödülü hak ediyorsunuz!
+                {easyEarnCopy}
               </CardDescription>
             </CardContent>
           </Card>
@@ -126,8 +145,7 @@ export default async function HomePage() {
             </CardHeader>
             <CardContent>
               <CardDescription className="text-base">
-                5 siparişte ücretsiz ayran, 7 siparişte sütlaç, 
-                11 siparişte 3 kişilik etli ekmek kazanın!
+                {specialRewardsCopy}
               </CardDescription>
             </CardContent>
           </Card>

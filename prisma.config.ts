@@ -1,39 +1,19 @@
 // prisma.config.ts  (project root)
-// Manually load .env so the DATABASE_URL is available when this file is evaluated
-import { readFileSync } from "fs";
-import { join } from "path";
-import { defineConfig } from "prisma/config";
+// Config for Prisma CLI commands (migrate, db push, studio, seed).
+// Runtime query connections are configured separately in src/lib/prisma.ts.
+import "dotenv/config";
+import { defineConfig, env } from "prisma/config";
 
-// Parse and inject .env variables before defineConfig runs
-try {
-  const envPath = join(process.cwd(), ".env");
-  const lines = readFileSync(envPath, "utf-8").split("\n");
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const eqIdx = trimmed.indexOf("=");
-    if (eqIdx === -1) continue;
-    const key = trimmed.slice(0, eqIdx).trim();
-    const val = trimmed.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, "");
-    if (key && !process.env[key]) {
-      process.env[key] = val;
-    }
-  }
-} catch {
-  // .env may not exist in production environments — that's fine
-}
-
-const DATABASE_URL = process.env.DATABASE_URL;
-if (!DATABASE_URL) {
-  throw new Error("DATABASE_URL is not set in .env or the environment.");
-}
-
+// Prisma CLI commands need a direct — i.e. non-pooled — connection to Neon:
+// PgBouncer's transaction pooling mode doesn't support the session-level
+// advisory locks Prisma Migrate uses. Runtime queries (via src/lib/prisma.ts)
+// go through the pooled DATABASE_URL instead.
 export default defineConfig({
   schema: "prisma/schema.prisma",
   migrations: {
     seed: "tsx prisma/seed.ts",
   },
   datasource: {
-    url: DATABASE_URL,
+    url: env("DIRECT_URL"),
   },
 });

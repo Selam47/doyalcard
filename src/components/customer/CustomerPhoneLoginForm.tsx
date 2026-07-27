@@ -16,10 +16,12 @@
 //     pre-registered before signInWithPhoneNumber is invoked.
 //  4. Every error path and every "go back" path calls destroyRecaptcha() so
 //     the next send attempt always starts with a clean slate.
-//  5. Phone numbers are normalized through a SINGLE helper (toE164) so the
-//     leading national "0" (e.g. "0555 123 45 67") never leaks into the
-//     E.164 string sent to Firebase — this was silently producing invalid
-//     numbers like "+900555..." and causing auth/invalid-phone-number.
+//  5. Phone numbers are normalized through the shared toE164() helper
+//     (src/lib/phone.ts — also used by the customer API routes and staff
+//     registration action) so the leading national "0" (e.g. "0555 123 45
+//     67") never leaks into the E.164 string sent to Firebase — this was
+//     silently producing invalid numbers like "+900555..." and causing
+//     auth/invalid-phone-number.
 
 // Extend window so TypeScript accepts window.recaptchaVerifier
 declare global {
@@ -36,6 +38,7 @@ import {
   type ConfirmationResult,
 } from "firebase/auth";
 import { auth } from "@/lib/firebase";
+import { toE164, E164_REGEX } from "@/lib/phone";
 import { toast } from "sonner";
 
 // ── Country code options ──────────────────────────────────────────────────────
@@ -50,23 +53,6 @@ const COUNTRY_CODES = [
 ];
 
 type Step = "phone" | "otp";
-
-// ── Phone normalization helpers ───────────────────────────────────────────
-// Strips everything but digits, then strips a leading national trunk "0"
-// (very common in TR/EU numbers: "0555 123 45 67" → "5551234567").
-// Without this, "+90" + "0555..." becomes the invalid "+900555..." and
-// Firebase rejects the request before ever sending an SMS.
-function normalizeDigits(raw: string): string {
-  return raw.replace(/\D/g, "").replace(/^0+/, "");
-}
-
-function toE164(countryCode: string, rawPhone: string): string {
-  return `${countryCode}${normalizeDigits(rawPhone)}`;
-}
-
-// Loose E.164 sanity check (7–15 digits after the +) — catches obviously
-// malformed numbers client-side before we ever touch Firebase/reCAPTCHA.
-const E164_REGEX = /^\+[1-9]\d{7,14}$/;
 
 export function CustomerPhoneLoginForm() {
   const router = useRouter();
@@ -133,9 +119,9 @@ export function CustomerPhoneLoginForm() {
       {
         size: "invisible",
         // Called when the reCAPTCHA challenge is solved — token is ready to
-        // be consumed by signInWithPhoneNumber (Firebase handles this internally)
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        callback: (_response: any) => {
+        // be consumed by signInWithPhoneNumber (Firebase handles this internally),
+        // so there's nothing to do with the response token here.
+        callback: () => {
           // reCAPTCHA solved — allow SMS send
         },
         // Called when the token expires before it is used.
@@ -343,13 +329,17 @@ export function CustomerPhoneLoginForm() {
         It is referenced via recaptchaContainerRef (not a string id) so React
         never unmounts it between step 1 and step 2, preventing duplicate-widget
         errors caused by Firebase re-scanning the DOM.
-        position:absolute / visibility:hidden keeps it invisible to users.
+        It is moved off-screen (not width:0/height:0) — a zero-dimension
+        container can prevent Google's reCAPTCHA fingerprinting/scoring iframe
+        from laying itself out correctly and, if risk scoring ever escalates
+        an "invisible" challenge to a visible one, a 0x0 box means the user
+        has no way to see or solve it.
       */}
       <div
         id="recaptcha-container"
         ref={recaptchaContainerRef}
         aria-hidden="true"
-        style={{ position: "absolute", width: 0, height: 0, overflow: "hidden" }}
+        style={{ position: "fixed", top: "-9999px", left: "-9999px" }}
       />
 
       {step === "phone" ? (

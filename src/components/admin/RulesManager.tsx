@@ -1,15 +1,13 @@
-"use client";
+'use client';
 
 import { useState, useTransition } from "react";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import {
   createCampaignRule,
-  updateCampaignRule,
   deleteCampaignRule,
   toggleRuleActive,
 } from "@/actions/admin";
-
 interface Rule {
   id: string;
   threshold: number;
@@ -26,6 +24,18 @@ export function RulesManager({ initialRules }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [showForm, setShowForm] = useState(false);
+  const [rules, setRules] = useState<Rule[]>(initialRules);
+  // Tracks the last `initialRules` reference we've synced from, so we can
+  // detect a fresh server render (e.g. after router.refresh() resolves) and
+  // adopt its data. Updating state directly during render like this — rather
+  // than in a useEffect — is React's recommended pattern for "adjusting
+  // state when props change": React re-renders immediately with the new
+  // state before committing, so there's no extra render or effect involved.
+  const [syncedRules, setSyncedRules] = useState(initialRules);
+  if (initialRules !== syncedRules) {
+    setSyncedRules(initialRules);
+    setRules(initialRules);
+  }
 
   function handleCreate(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -45,7 +55,15 @@ export function RulesManager({ initialRules }: Props) {
   function handleDelete(id: string) {
     if (!confirm("Bu kuralı silmek istediğinizden emin misiniz?")) return;
     startTransition(async () => {
-      await deleteCampaignRule(id);
+      const result = await deleteCampaignRule(id);
+      if (!result || !result.success) {
+        toast.error(result?.error ?? "Kural silinemedi");
+        return;
+      }
+
+      // Update local state immediately so the row disappears right away,
+      // instead of waiting on a full server round-trip.
+      setRules((prev) => prev.filter((rule) => rule.id !== id));
       toast.success("Kural silindi");
       router.refresh();
     });
@@ -53,7 +71,14 @@ export function RulesManager({ initialRules }: Props) {
 
   function handleToggle(id: string, current: boolean) {
     startTransition(async () => {
-      await toggleRuleActive(id, !current);
+      const result = await toggleRuleActive(id, !current);
+      if (!result || !result.success) {
+        toast.error(result?.error ?? "Kural durumu değiştirilemedi");
+        return;
+      }
+      setRules((prev) =>
+        prev.map((rule) => (rule.id === id ? { ...rule, isActive: !current } : rule))
+      );
       toast.success(current ? "Kural devre dışı bırakıldı" : "Kural aktif edildi");
       router.refresh();
     });
@@ -75,7 +100,7 @@ export function RulesManager({ initialRules }: Props) {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {initialRules.map((rule) => (
+              {rules.map((rule) => (
                 <tr key={rule.id} className="hover:bg-gray-50/50">
                   <td className="px-4 py-3">
                     <span className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-green-100 text-green-700 font-bold">
@@ -119,7 +144,7 @@ export function RulesManager({ initialRules }: Props) {
                   </td>
                 </tr>
               ))}
-              {initialRules.length === 0 && (
+              {rules.length === 0 && (
                 <tr>
                   <td colSpan={5} className="px-4 py-8 text-center text-gray-400">
                     Henüz kural eklenmemiş
@@ -138,14 +163,14 @@ export function RulesManager({ initialRules }: Props) {
           <form onSubmit={handleCreate} className="grid grid-cols-2 gap-4">
             <div className="space-y-1">
               <label className="text-xs font-medium text-gray-600">
-                Eşik Değeri (1-11) *
+                Eşik Değeri (1-15) *
               </label>
               <input
                 id="rule-threshold"
                 name="threshold"
                 type="number"
                 min={1}
-                max={11}
+                max={15}
                 required
                 className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-400"
               />

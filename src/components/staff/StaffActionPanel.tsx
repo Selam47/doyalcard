@@ -22,9 +22,10 @@ interface Props {
     lifetimeCount: number;
   };
   pendingRewards: PendingReward[];
+  cycleLength: number;
 }
 
-export function StaffActionPanel({ customer, pendingRewards }: Props) {
+export function StaffActionPanel({ customer, pendingRewards, cycleLength }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [isClaimingId, setIsClaimingId] = useState<string | null>(null);
@@ -39,9 +40,10 @@ export function StaffActionPanel({ customer, pendingRewards }: Props) {
 
       if (result.reward) {
         if (result.reward.isResetPoint) {
-          toast.success(`🏆 Büyük Ödül Kazanıldı! "${result.reward.rewardName}" — Döngü sıfırlandı!`, {
-            duration: 6000,
-          });
+          toast.success(
+            `🎉 Tebrikler! "${result.reward.rewardName}" Kazandınız! — Döngü sıfırlandı!`,
+            { duration: 6000 }
+          );
         } else {
           toast.success(`🎁 Ödül Kazanıldı: "${result.reward.rewardName}"`, {
             duration: 5000,
@@ -84,7 +86,9 @@ export function StaffActionPanel({ customer, pendingRewards }: Props) {
           <div className="bg-green-50 rounded-xl p-4 text-center">
             <div className="text-3xl font-extrabold text-green-700">
               {customer.currentCycleCount}
-              <span className="text-lg text-green-400">/11</span>
+              {cycleLength > 0 && (
+                <span className="text-lg text-green-400">/{cycleLength}</span>
+              )}
             </div>
             <div className="text-xs text-gray-500 mt-1">Mevcut Döngü</div>
           </div>

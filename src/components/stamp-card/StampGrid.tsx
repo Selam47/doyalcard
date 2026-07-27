@@ -1,28 +1,65 @@
 // src/components/stamp-card/StampGrid.tsx
 import { cn } from "@/lib/utils";
+import type { ActiveCampaignRule } from "@/lib/campaign-rules";
 
-const TOTAL_STAMPS = 11;
+// Visual styling for milestone stamps is generated from the active
+// CampaignRule rows (threshold + rewardName + isResetPoint) — there is no
+// hardcoded stamp count or reward list here. If admins add, remove, or
+// reorder rules in /admin/rules, this grid reflects it automatically.
+const RESET_STYLE = { color: "bg-amber-400 ring-amber-500", emoji: "🫓" };
+const MILESTONE_PALETTE: { color: string; emoji: string }[] = [
+  { color: "bg-green-400 ring-green-500", emoji: "🥛" },
+  { color: "bg-blue-400 ring-blue-500", emoji: "🍮" },
+  { color: "bg-purple-400 ring-purple-500", emoji: "🎁" },
+  { color: "bg-pink-400 ring-pink-500", emoji: "🍰" },
+  { color: "bg-teal-400 ring-teal-500", emoji: "🍪" },
+];
 
-// Milestone rewards with visual styling
-const MILESTONES: Record<number, { color: string; emoji: string; label: string }> = {
-  5: { color: "bg-green-400 ring-green-500", emoji: "🥛", label: "Ayran" },
-  7: { color: "bg-blue-400 ring-blue-500", emoji: "🍮", label: "Sütlaç" },
-  11: { color: "bg-amber-400 ring-amber-500", emoji: "🏆", label: "Büyük Ödül" },
-};
+// Fallback cycle length used only when there are no active rules at all
+// (e.g. a fresh install before an admin has configured any campaign).
+const DEFAULT_TOTAL_STAMPS = 10;
+
+interface Milestone {
+  color: string;
+  emoji: string;
+  label: string;
+}
 
 interface Props {
   currentCount: number;
+  activeRules: ActiveCampaignRule[];
+  totalStamps: number;
 }
 
-export function StampGrid({ currentCount }: Props) {
+function buildMilestones(rules: ActiveCampaignRule[]): Record<number, Milestone> {
+  const milestones: Record<number, Milestone> = {};
+  let paletteIndex = 0;
+
+  for (const rule of rules) {
+    if (rule.isResetPoint) {
+      milestones[rule.threshold] = { ...RESET_STYLE, label: rule.rewardName };
+    } else {
+      const style = MILESTONE_PALETTE[paletteIndex % MILESTONE_PALETTE.length];
+      paletteIndex += 1;
+      milestones[rule.threshold] = { ...style, label: rule.rewardName };
+    }
+  }
+
+  return milestones;
+}
+
+export function StampGrid({ currentCount, activeRules, totalStamps }: Props) {
+  const milestones = buildMilestones(activeRules);
+  const gridSize = totalStamps > 0 ? totalStamps : DEFAULT_TOTAL_STAMPS;
+
   return (
     <div className="space-y-4">
       {/* Stamp Grid */}
       <div className="grid grid-cols-4 gap-3 sm:grid-cols-6">
-        {Array.from({ length: TOTAL_STAMPS }, (_, i) => {
+        {Array.from({ length: gridSize }, (_, i) => {
           const stampNumber = i + 1;
           const isFilled = stampNumber <= currentCount;
-          const milestone = MILESTONES[stampNumber];
+          const milestone = milestones[stampNumber];
 
           return (
             <div
@@ -41,7 +78,7 @@ export function StampGrid({ currentCount }: Props) {
                 milestone ? (
                   <div className="flex flex-col items-center">
                     <span className="text-2xl sm:text-3xl">{milestone.emoji}</span>
-                    <span className="text-[8px] sm:text-[9px] font-bold text-white mt-0.5">
+                    <span className="text-[8px] sm:text-[9px] font-bold text-white mt-0.5 px-1 text-center leading-tight">
                       {milestone.label}
                     </span>
                   </div>
@@ -76,24 +113,31 @@ export function StampGrid({ currentCount }: Props) {
       </div>
 
       {/* Milestone Legend */}
-      <div className="flex flex-wrap gap-3 text-xs text-gray-600">
-        <div className="flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded-full bg-green-500 inline-block shadow-sm" />
-          <span>Normal Puan</span>
+      {activeRules.length > 0 && (
+        <div className="flex flex-wrap gap-3 text-xs text-gray-600">
+          <div className="flex items-center gap-1.5">
+            <span className="w-3 h-3 rounded-full bg-green-500 inline-block shadow-sm" />
+            <span>Normal Puan</span>
+          </div>
+          {activeRules.map((rule) => {
+            const milestone = milestones[rule.threshold];
+            if (!milestone) return null;
+            return (
+              <div key={rule.id} className="flex items-center gap-1.5">
+                <span
+                  className={cn(
+                    "w-3 h-3 rounded-full inline-block shadow-sm",
+                    milestone.color.split(" ")[0]
+                  )}
+                />
+                <span>
+                  {milestone.emoji} {rule.threshold}. {milestone.label}
+                </span>
+              </div>
+            );
+          })}
         </div>
-        <div className="flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded-full bg-green-400 inline-block shadow-sm" />
-          <span>🥛 5. Ayran</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded-full bg-blue-400 inline-block shadow-sm" />
-          <span>🍮 7. Sütlaç</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded-full bg-amber-400 inline-block shadow-sm" />
-          <span>🏆 11. Büyük Ödül</span>
-        </div>
-      </div>
+      )}
     </div>
   );
 }

@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { auth } from "@/lib/auth";
 import { revalidatePath } from "next/cache";
 import { Prisma } from "@prisma/client";
+import { isDbConnectionError } from "@/lib/db-errors";
 
 export type ClaimRewardResult =
   | { success: true; rewardName: string }
@@ -92,6 +93,13 @@ export async function claimReward(
           error: "Bu ödül zaten kullanılmış veya geçersiz",
         };
       }
+    }
+
+    if (isDbConnectionError(error)) {
+      return {
+        success: false,
+        error: "Veritabanı bağlantısı zaman aşımına uğradı. Lütfen tekrar deneyin.",
+      };
     }
 
     return {

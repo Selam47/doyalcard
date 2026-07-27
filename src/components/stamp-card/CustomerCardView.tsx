@@ -1,8 +1,8 @@
 // src/components/stamp-card/CustomerCardView.tsx
-import Image from "next/image";
 import { maskPhone, formatDate } from "@/lib/utils";
 import { StampGrid } from "./StampGrid";
 import { RewardBadge } from "./RewardBadge";
+import { getCycleLength, type ActiveCampaignRule } from "@/lib/campaign-rules";
 
 interface Reward {
   id: string;
@@ -23,11 +23,13 @@ interface Props {
     rewards: Reward[];
   };
   qrDataUrl: string;
+  activeRules: ActiveCampaignRule[];
 }
 
-export function CustomerCardView({ customer, qrDataUrl }: Props) {
+export function CustomerCardView({ customer, qrDataUrl, activeRules }: Props) {
   const pendingRewards = customer.rewards.filter((r) => r.status === "PENDING");
   const claimedRewards = customer.rewards.filter((r) => r.status === "CLAIMED");
+  const cycleLength = getCycleLength(activeRules);
 
   return (
     <div className="space-y-4">
@@ -55,10 +57,15 @@ export function CustomerCardView({ customer, qrDataUrl }: Props) {
           <p className="text-gray-500 text-xs font-semibold uppercase tracking-wide mb-4 flex items-center gap-2">
             <span>Mevcut Döngü</span>
             <span className="bg-green-100 text-green-700 px-2 py-0.5 rounded-full">
-              {customer.currentCycleCount}/11
+              {customer.currentCycleCount}
+              {cycleLength > 0 ? `/${cycleLength}` : ""}
             </span>
           </p>
-          <StampGrid currentCount={customer.currentCycleCount} />
+          <StampGrid
+            currentCount={customer.currentCycleCount}
+            activeRules={activeRules}
+            totalStamps={cycleLength}
+          />
         </div>
 
         {/* Footer */}

@@ -70,7 +70,7 @@ async function main() {
     {
       id: "rule-003",
       threshold: 11,
-      rewardName: "3 Kişilik Etli Ekmek (Büyük Ödül)",
+      rewardName: "1 Etli Ekmek Kazandınız",
       isResetPoint: true,
       isActive: true,
     },

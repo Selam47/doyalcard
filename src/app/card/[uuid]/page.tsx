@@ -1,11 +1,17 @@
 // src/app/card/[uuid]/page.tsx
 import type { Metadata } from "next";
+
 import { notFound } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { getCustomerByUuid } from "@/actions/customer";
 import { CustomerCardView } from "@/components/stamp-card/CustomerCardView";
 import { StaffActionPanel } from "@/components/staff/StaffActionPanel";
 import { generateQrDataUrl } from "@/lib/qr";
+import { getActiveCampaignRules, getCycleLength } from "@/lib/campaign-rules";
+
+// Customer stamp progress and staff-facing counters depend on live
+// campaign rules and order counts — never statically cache this page.
+export const dynamic = "force-dynamic";
 
 interface Props {
   params: Promise<{ uuid: string }>;
@@ -20,16 +26,18 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 
 export default async function CardPage({ params }: Props) {
   const { uuid } = await params;
-  const [customer, session, qrDataUrl] = await Promise.all([
+  const [customer, session, qrDataUrl, activeRules] = await Promise.all([
     getCustomerByUuid(uuid),
     auth(),
     generateQrDataUrl(uuid),
+    getActiveCampaignRules(),
   ]);
 
   if (!customer) notFound();
 
   const isStaff =
     session?.user?.role === "STAFF" || session?.user?.role === "ADMIN";
+  const cycleLength = getCycleLength(activeRules);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-green-950 via-green-900 to-emerald-800">
@@ -48,7 +56,11 @@ export default async function CardPage({ params }: Props) {
 
       <main className="max-w-2xl mx-auto px-4 pb-8 space-y-4">
         {/* Always show the customer card */}
-        <CustomerCardView customer={customer} qrDataUrl={qrDataUrl} />
+        <CustomerCardView
+          customer={customer}
+          qrDataUrl={qrDataUrl}
+          activeRules={activeRules}
+        />
 
         {/* Staff panel appears below when logged in */}
         {isStaff && (
@@ -63,6 +75,7 @@ export default async function CardPage({ params }: Props) {
             pendingRewards={customer.rewards
               .filter((r) => r.status === "PENDING")
               .map((r) => ({ id: r.id, rewardName: r.rule.rewardName, createdAt: r.createdAt }))}
+            cycleLength={cycleLength}
           />
         )}
       </main>

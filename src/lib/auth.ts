@@ -1,14 +1,17 @@
 // src/lib/auth.ts
+// Full auth config — used by the /api/auth/[...nextauth] route handler.
+// bcryptjs is Node.js-only, so the /api/auth route must stay on Node runtime.
 import NextAuth from "next-auth";
+import type { Session, User } from "next-auth";
+import type { JWT } from "next-auth/jwt";
 import Credentials from "next-auth/providers/credentials";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
-import { Role } from "@prisma/client";
 
-export const { handlers, signIn, signOut, auth } = NextAuth({
+const authConfig = {
   adapter: PrismaAdapter(prisma),
-  session: { strategy: "jwt" },
+  session: { strategy: "jwt" as const },
   pages: {
     signIn: "/login",
   },
@@ -48,23 +51,26 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     }),
   ],
   callbacks: {
-    async jwt({ token, user }) {
-      if (user) {
+    async jwt({ token, user }: { token: JWT; user?: User }) {
+      if (user && user.id) {
         token.id = user.id;
-        token.role = (user as { role: Role }).role;
-        token.branchId = (user as { branchId: string | null }).branchId;
-        token.branchName = (user as { branchName: string | null }).branchName;
+        token.role = user.role;
+        token.branchId = user.branchId;
+        token.branchName = user.branchName;
       }
       return token;
     },
-    async session({ session, token }) {
-      if (token) {
-        session.user.id = token.id as string;
-        session.user.role = token.role as Role;
-        session.user.branchId = token.branchId as string | null;
-        session.user.branchName = token.branchName as string | null;
+    async session({ session, token }: { session: Session; token: JWT }) {
+      if (token && session.user) {
+        session.user.id = token.id;
+        session.user.role = token.role;
+        session.user.branchId = token.branchId;
+        session.user.branchName = token.branchName;
       }
       return session;
     },
   },
-});
+};
+
+export const { handlers, signIn, signOut, auth } = NextAuth(authConfig);
+

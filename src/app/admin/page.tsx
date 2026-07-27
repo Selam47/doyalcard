@@ -1,7 +1,12 @@
 // src/app/admin/page.tsx
 import type { Metadata } from "next";
+
 import { getDashboardStats } from "@/actions/admin";
 import Link from "next/link";
+
+// Stats (orders, rewards, pending rewards) change continuously — never
+// statically cache this page.
+export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = { title: "Admin Dashboard" };
 

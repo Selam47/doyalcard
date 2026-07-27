@@ -4,7 +4,6 @@ import { useState, useTransition } from "react";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import { createStaffUser, toggleUserActive, deleteStaffUser } from "@/actions/admin";
-import { formatDate } from "@/lib/utils";
 
 interface User {
   id: string;

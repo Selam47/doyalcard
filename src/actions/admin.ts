@@ -6,6 +6,7 @@ import { auth } from "@/lib/auth";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
+import { Prisma } from "@prisma/client";
 
 // ─── Auth Guard Helper ────────────────────────────────────────────────────────
 async function requireAdmin() {
@@ -82,7 +83,7 @@ const RuleSchema = z.object({
     .number()
     .int()
     .min(1, "Eşik değeri en az 1 olmalı")
-    .max(11, "Eşik değeri en fazla 11 olabilir"),
+    .max(15, "Eşik değeri en fazla 15 olabilir"),
   rewardName: z
     .string()
     .min(2, "Ödül adı en az 2 karakter olmalı")
@@ -167,6 +168,10 @@ export async function updateCampaignRule(id: string, formData: FormData) {
 export async function deleteCampaignRule(id: string) {
   await requireAdmin();
 
+  if (!id || typeof id !== "string") {
+    return { success: false, error: "Geçersiz kural kimliği" };
+  }
+
   try {
     // Check if rule has associated rewards
     const rewardsCount = await prisma.reward.count({
@@ -180,11 +185,27 @@ export async function deleteCampaignRule(id: string) {
       };
     }
 
-    await prisma.campaignRule.delete({ where: { id } });
+    const deleted = await prisma.campaignRule.delete({ where: { id } });
+
+    // Purge any cached RSC payload for the rules page so a subsequent
+    // router.refresh() (or a hard page reload) reliably reflects the delete.
     revalidatePath("/admin/rules");
-    return { success: true };
+
+    return { success: true, id: deleted.id };
   } catch (error) {
     console.error("[deleteCampaignRule] Error:", error);
+
+    // Prisma throws P2025 when the record no longer exists — treat that as
+    // an already-deleted rule rather than a generic failure so the UI can
+    // still remove it from the list.
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2025"
+    ) {
+      revalidatePath("/admin/rules");
+      return { success: true, id };
+    }
+
     return { success: false, error: "Kural silinemedi" };
   }
 }

@@ -5,6 +5,8 @@ import { prisma } from "@/lib/prisma";
 import { auth } from "@/lib/auth";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
+import { isValidE164, sanitizePhoneInput } from "@/lib/phone";
+import { isDbConnectionError } from "@/lib/db-errors";
 
 // ─── Validation Schemas ───────────────────────────────────────────────────────
 const RegisterSchema = z.object({
@@ -13,10 +15,13 @@ const RegisterSchema = z.object({
     .min(2, "Ad en az 2 karakter olmalı")
     .max(100, "Ad en fazla 100 karakter olabilir")
     .trim(),
+  // Loosely validated here (format/length only) — the strict E.164 check
+  // happens after normalization below, so we can give a clearer error
+  // message ("must include country code") instead of a generic regex miss.
   phone: z
     .string()
     .min(10, "Geçerli bir telefon numarası girin")
-    .max(15, "Geçerli bir telefon numarası girin")
+    .max(20, "Geçerli bir telefon numarası girin")
     .regex(/^[+]?[\d\s()-]+$/, "Geçerli bir telefon numarası formatı girin"),
   kvkkConsent: z.boolean().refine((val) => val === true, {
   message: "KVKK onayı zorunludur",
@@ -58,8 +63,17 @@ export async function registerCustomer(
 
     const { name, phone } = parsed.data;
 
-    // ─── 3. Normalize Phone Number ─────────────────────────────────────────────
-    const normalizedPhone = phone.replace(/[\s()-]/g, "");
+    // ─── 3. Normalize & Enforce E.164 ──────────────────────────────────────────
+    // Every customer record must be keyed on the same canonical phone format
+    // Firebase Auth produces, or a customer registered manually by staff
+    // won't match up with themselves when they later sign in via OTP.
+    const normalizedPhone = sanitizePhoneInput(phone);
+    if (!isValidE164(normalizedPhone)) {
+      return {
+        success: false,
+        error: "Telefon numarası ülke koduyla birlikte girilmeli (örn: +905551234567)",
+      };
+    }
 
     // ─── 4. Check for Duplicate ────────────────────────────────────────────────
     const existing = await prisma.customer.findUnique({
@@ -108,6 +122,13 @@ export async function registerCustomer(
           error: "Bu telefon numarası zaten kayıtlı",
         };
       }
+    }
+
+    if (isDbConnectionError(error)) {
+      return {
+        success: false,
+        error: "Veritabanı bağlantısı zaman aşımına uğradı. Lütfen tekrar deneyin.",
+      };
     }
 
     return {

@@ -5,8 +5,10 @@ const nextConfig: NextConfig = {
   images: {
     remotePatterns: [],
   },
-  // Suppress known Prisma warnings in Next.js edge
-  serverExternalPackages: ["@prisma/client", "bcryptjs"],
+  // Keep these packages external to the Next.js server bundle so their
+  // native/binary internals (Prisma's query engine, bcryptjs) work correctly
+  // in Vercel's Node.js serverless functions.
+  serverExternalPackages: ["@prisma/client", "bcryptjs", "pg"],
 };
 
 export default nextConfig;
