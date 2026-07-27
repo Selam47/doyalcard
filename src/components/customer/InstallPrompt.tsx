@@ -54,9 +54,10 @@ export function InstallPrompt() {
     if (isStandalone() || wasRecentlyDismissed()) return;
 
     if (isIos()) {
+      // Intentional pre-paint sync from an external signal (the user agent);
+      // the rule only flags the first call in the block.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setIos(true);
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setVisible(true);
       return;
     }

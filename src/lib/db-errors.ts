@@ -3,7 +3,7 @@
 // most commonly a Neon "cold start" (compute scaled to zero and the first
 // query has to wait for it to wake up) — so API routes and server actions
 // can return a distinct, retryable error instead of a generic 500.
-import { Prisma } from "@prisma/client";
+import { Prisma } from "@/generated/prisma/client";
 
 // Prisma error codes that indicate a connection/availability problem rather
 // than a query/data problem:

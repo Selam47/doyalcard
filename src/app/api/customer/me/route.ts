@@ -20,7 +20,10 @@ export async function GET() {
   }
 
   try {
-    const customer = await prisma.customer.findUnique({
+    // The customer row and the campaign config are independent — fetch them
+    // in parallel instead of serially.
+    const [customer, campaign] = await Promise.all([
+      prisma.customer.findUnique({
       where: { id: session.customerId },
       include: {
         orders: {
@@ -38,7 +41,9 @@ export async function GET() {
           include: { rule: true },
         },
       },
-    });
+      }),
+      getCampaignConfig(),
+    ]);
 
     if (!customer) {
       return NextResponse.json({ error: "Customer not found" }, { status: 404 });
@@ -46,7 +51,7 @@ export async function GET() {
 
     // Same single source of truth the card UI uses, so an API consumer can
     // never disagree with what the customer sees on screen.
-    const { rules, cycleRule, maxStamps } = await getCampaignConfig();
+    const { rules, cycleRule, maxStamps } = campaign;
     const cycleCount = clampCycleCount(customer.currentCycleCount, maxStamps);
 
     // Next milestone: the lowest active threshold still ahead of the customer;

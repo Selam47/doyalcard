@@ -39,8 +39,8 @@ export default async function CardPage({ params }: Props) {
 
   if (!customer) notFound();
 
-  const isStaff =
-    session?.user?.role === "STAFF" || session?.user?.role === "ADMIN";
+  const isAdmin = session?.user?.role === "ADMIN";
+  const isStaff = session?.user?.role === "STAFF" || isAdmin;
   const { rules: activeRules, maxStamps } = campaign;
 
   return (
@@ -84,6 +84,7 @@ export default async function CardPage({ params }: Props) {
               .filter((r) => r.status === "PENDING")
               .map((r) => ({ id: r.id, rewardName: r.rule.rewardName, createdAt: r.createdAt }))}
             maxStamps={maxStamps}
+            isAdmin={isAdmin}
           />
         )}
       </main>

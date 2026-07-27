@@ -4,9 +4,13 @@
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/lib/auth";
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
+import { Prisma } from "@/generated/prisma/client";
 import { z } from "zod";
 import { isValidE164, sanitizePhoneInput } from "@/lib/phone";
 import { isDbConnectionError } from "@/lib/db-errors";
+import { getCustomerSession } from "@/lib/customer-session";
+import { revalidateStampSurfaces } from "@/lib/revalidate";
 
 // ─── Validation Schemas ───────────────────────────────────────────────────────
 const RegisterSchema = z.object({
@@ -93,6 +97,7 @@ export async function registerCustomer(
         name,
         phone: normalizedPhone,
         kvkkConsent: true,
+        kvkkConsentAt: new Date(),
         branchId: session.user.branchId ?? null,
       },
       select: { id: true, qrUuid: true, name: true, phone: true },
@@ -101,7 +106,9 @@ export async function registerCustomer(
     // ─── 6. Revalidate & Log ───────────────────────────────────────────────────
     revalidatePath("/staff");
     revalidatePath("/staff/register");
-    console.log(`[registerCustomer] New customer: ${customer.name} (${customer.phone})`);
+    // Log the id only — a phone number is personal data (KVKK) and does
+    // not belong in production logs.
+    console.log(`[registerCustomer] New customer registered: ${customer.id}`);
 
     return {
       success: true,
@@ -136,6 +143,130 @@ export async function registerCustomer(
       error: "Kayıt yapılamadı. Lütfen tekrar deneyin.",
     };
   }
+}
+
+// ─── Delete Customer (ADMIN only) ─────────────────────────────────────────────
+
+/**
+ * Failure shape of {@link deleteCustomer}.
+ *
+ * There is deliberately no `{ success: true }` variant: on success the action
+ * redirects to `/staff`, so the promise only ever *resolves* when something
+ * went wrong. Callers can therefore treat any resolved value as an error.
+ */
+export type DeleteCustomerResult = { success: false; error: string };
+
+/**
+ * Permanently delete a customer together with every record that belongs to
+ * them (KVKK "right to erasure"). ADMIN only.
+ *
+ * The rewards → orders → customer sequence runs inside a single
+ * `prisma.$transaction()`, so a failure at any step rolls the whole thing
+ * back and the customer is never left half-deleted.
+ *
+ * @param customerId `Customer.id` (cuid), not the public `qrUuid`.
+ */
+export async function deleteCustomer(
+  customerId: string
+): Promise<DeleteCustomerResult> {
+  // ─── 1. Authentication & Authorization ─────────────────────────────────────
+  // Enforced *inside* the Server Action — a hidden button is not a permission
+  // check, and Server Actions are publicly callable endpoints.
+  const session = await auth();
+  if (!session?.user) {
+    return { success: false, error: "Oturum bulunamadı. Lütfen tekrar giriş yapın." };
+  }
+  if (session.user.role !== "ADMIN") {
+    return {
+      success: false,
+      error: "Yetkisiz erişim: Müşteri silme yalnızca yöneticiye açıktır",
+    };
+  }
+
+  // ─── 2. Input Validation ───────────────────────────────────────────────────
+  if (typeof customerId !== "string" || customerId.trim().length === 0) {
+    return { success: false, error: "Geçersiz müşteri kimliği" };
+  }
+  const id = customerId.trim();
+
+  // Filled inside the try below. `redirect()` works by throwing, so it MUST be
+  // called after the try/catch — inside it, the catch block would swallow the
+  // navigation and report it as a database failure.
+  let deleted: { name: string; qrUuid: string } | null = null;
+
+  try {
+    // ─── 3. Resolve the customer ─────────────────────────────────────────────
+    // qrUuid is needed for cache invalidation *after* the row is gone, and the
+    // name gives the success toast something to show.
+    const customer = await prisma.customer.findUnique({
+      where: { id },
+      select: { name: true, qrUuid: true },
+    });
+
+    if (!customer) {
+      return { success: false, error: "Müşteri bulunamadı" };
+    }
+
+    // ─── 4. Atomic cascade delete ────────────────────────────────────────────
+    // Children before parent. Rewards reference both Customer and Order, so
+    // they have to go first even though the schema declares onDelete: Cascade
+    // — doing it explicitly keeps the behaviour identical if the FK policy is
+    // ever tightened to Restrict for revenue reporting (see schema comment).
+    await prisma.$transaction([
+      prisma.reward.deleteMany({ where: { customerId: id } }),
+      prisma.order.deleteMany({ where: { customerId: id } }),
+      prisma.customer.delete({ where: { id } }),
+    ]);
+
+    deleted = { name: customer.name, qrUuid: customer.qrUuid };
+  } catch (error) {
+    // ─── 5. Error Handling ───────────────────────────────────────────────────
+    console.error("[deleteCustomer] Error:", error);
+
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      // P2025 — the row disappeared between the lookup and the delete
+      // (another admin got there first). Not a real failure for the user.
+      if (error.code === "P2025") {
+        return { success: false, error: "Müşteri bulunamadı veya zaten silinmiş" };
+      }
+      // P2003 — a foreign key elsewhere still points at this customer.
+      if (error.code === "P2003") {
+        return {
+          success: false,
+          error:
+            "Müşteri başka kayıtlarla ilişkili olduğu için silinemedi. Lütfen yöneticinize başvurun.",
+        };
+      }
+    }
+
+    if (isDbConnectionError(error)) {
+      return {
+        success: false,
+        error: "Veritabanı bağlantısı zaman aşımına uğradı. Lütfen tekrar deneyin.",
+      };
+    }
+
+    return { success: false, error: "Müşteri silinemedi. Lütfen tekrar deneyin." };
+  }
+
+  if (!deleted) {
+    return { success: false, error: "Müşteri silinemedi. Lütfen tekrar deneyin." };
+  }
+
+  console.log(
+    `[deleteCustomer] ${deleted.name} (${id}) deleted by ${session.user.email ?? session.user.id}`
+  );
+
+  // ─── 6. Cache Invalidation ─────────────────────────────────────────────────
+  // revalidateStampSurfaces() performs revalidatePath("/staff") and
+  // revalidatePath(`/card/${qrUuid}`), plus the `/card/[uuid]` pattern form
+  // that the concrete path alone does not cover (see src/lib/revalidate.ts).
+  revalidateStampSurfaces(deleted.qrUuid);
+
+  // ─── 7. Redirect ───────────────────────────────────────────────────────────
+  // The `deleted` param is consumed once by /staff to raise the success toast
+  // and then stripped from the URL. Never returns.
+  redirect(`/staff?deleted=${encodeURIComponent(deleted.name)}`);
 }
 
 /**
@@ -231,12 +362,15 @@ export async function getCustomerByUuid(uuid: string) {
 
 /**
  * Get customer by ID (for the customer self-service dashboard)
- * Used server-side after verifying the customer session cookie.
- * No staff/admin auth is required — the caller must already have confirmed
- * the session belongs to this customerId.
+ * Server Actions are publicly callable endpoints, so the customer session
+ * cookie is verified HERE and must match the requested id — never trust the
+ * caller to have done it.
  */
 export async function getCustomerById(id: string) {
   if (!id || typeof id !== "string") return null;
+
+  const session = await getCustomerSession();
+  if (!session || session.customerId !== id) return null;
 
   try {
     const customer = await prisma.customer.findUnique({
@@ -263,49 +397,6 @@ export async function getCustomerById(id: string) {
     return customer;
   } catch (error) {
     console.error("[getCustomerById] Error:", error);
-    return null;
-  }
-}
-
-/**
- * Get customer statistics (for admin dashboard)
- */
-export async function getCustomerStats() {
-  const session = await auth();
-  if (!session?.user || session.user.role !== "ADMIN") {
-    return null;
-  }
-
-  try {
-    const [totalCustomers, activeCustomers, completedCycles] =
-      await Promise.all([
-        prisma.customer.count(),
-        prisma.customer.count({
-          where: {
-            orders: {
-              some: {
-                createdAt: {
-                  gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), // Last 30 days
-                },
-              },
-            },
-          },
-        }),
-        prisma.reward.count({
-          where: {
-            rule: { isResetPoint: true },
-            status: "CLAIMED",
-          },
-        }),
-      ]);
-
-    return {
-      totalCustomers,
-      activeCustomers,
-      completedCycles,
-    };
-  } catch (error) {
-    console.error("[getCustomerStats] Error:", error);
     return null;
   }
 }

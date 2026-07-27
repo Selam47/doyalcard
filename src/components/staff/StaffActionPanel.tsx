@@ -7,6 +7,7 @@ import { claimReward } from "@/actions/reward";
 import { useRouter } from "next/navigation";
 import { formatDate } from "@/lib/utils";
 import { clampCycleCount } from "@/lib/campaign-rules";
+import { DeleteCustomerButton } from "@/components/staff/DeleteCustomerButton";
 
 interface PendingReward {
   id: string;
@@ -29,9 +30,20 @@ interface Props {
    * "0/maxStamps" counter here always matches the customer's card.
    */
   maxStamps: number;
+  /**
+   * Resolved server-side from the session. Controls visibility of the
+   * destructive "Müşteriyi Sil" action only — the real permission check lives
+   * inside the deleteCustomer Server Action.
+   */
+  isAdmin: boolean;
 }
 
-export function StaffActionPanel({ customer, pendingRewards, maxStamps }: Props) {
+export function StaffActionPanel({
+  customer,
+  pendingRewards,
+  maxStamps,
+  isAdmin,
+}: Props) {
   const router = useRouter();
   // Legacy rows may exceed a since-lowered threshold — clamp for display.
   const cycleCount = clampCycleCount(customer.currentCycleCount, maxStamps);
@@ -205,6 +217,24 @@ export function StaffActionPanel({ customer, pendingRewards, maxStamps }: Props)
                 </button>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* Danger zone — ADMIN only */}
+        {isAdmin && (
+          <div className="pt-4 border-t border-gray-100 space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-red-500">
+              Tehlikeli Bölge
+            </p>
+            <DeleteCustomerButton
+              customerId={customer.id}
+              customerName={customer.name}
+              disabled={isPending || isRemoving || isClaimingId !== null}
+            />
+            <p className="text-[11px] text-gray-400 leading-snug">
+              Müşteri, siparişleri ve ödülleri kalıcı olarak silinir. Bu işlem
+              geri alınamaz.
+            </p>
           </div>
         )}
       </div>

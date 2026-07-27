@@ -3,7 +3,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/lib/auth";
-import { Prisma } from "@prisma/client";
+import { Prisma } from "@/generated/prisma/client";
 import { isDbConnectionError } from "@/lib/db-errors";
 import { revalidateStampSurfaces } from "@/lib/revalidate";
 import {
@@ -16,8 +16,20 @@ import {
 const TX_OPTIONS = {
   maxWait: 5000, // max time to wait for a transaction slot
   timeout: 10000, // max time for the transaction to complete
-  isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+  // Serializable: two cashiers stamping the same card at the same moment
+  // would otherwise both read count N and both write N+1 (lost update).
+  // Under Serializable the losing transaction fails with P2034 and is
+  // surfaced as a clean "please retry" error instead of losing a stamp.
+  isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
 } as const;
+
+/** Postgres serialization conflict under the Serializable isolation level. */
+function isTxConflict(error: unknown): boolean {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === "P2034"
+  );
+}
 
 const RULE_SELECT = {
   id: true,
@@ -179,6 +191,13 @@ export async function addOrder(customerId: string): Promise<AddOrderResult> {
       }
     }
 
+    if (isTxConflict(error)) {
+      return {
+        success: false,
+        error: "Eşzamanlı işlem çakışması oluştu. Lütfen tekrar deneyin.",
+      };
+    }
+
     if (isDbConnectionError(error)) {
       return {
         success: false,
@@ -295,6 +314,13 @@ export async function removeStamp(
 
     if (error instanceof Error && error.message === "CUSTOMER_NOT_FOUND") {
       return { success: false, error: "Müşteri bulunamadı" };
+    }
+
+    if (isTxConflict(error)) {
+      return {
+        success: false,
+        error: "Eşzamanlı işlem çakışması oluştu. Lütfen tekrar deneyin.",
+      };
     }
 
     if (isDbConnectionError(error)) {

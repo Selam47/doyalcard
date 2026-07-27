@@ -7,14 +7,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-
-function maskPhone(phone: string): string {
-  if (phone.length < 6) return phone;
-  const start = phone.slice(0, phone.length - 7);
-  const masked = "X".repeat(5);
-  const end = phone.slice(-2);
-  return `${start} ${masked}${end}`;
-}
+import { maskPhone } from "@/lib/utils";
 
 interface Props {
   customerName: string;

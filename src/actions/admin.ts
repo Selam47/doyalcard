@@ -7,7 +7,7 @@ import { revalidatePath } from "next/cache";
 import { revalidateCampaignSurfaces } from "@/lib/revalidate";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
-import { Prisma } from "@prisma/client";
+import { Prisma } from "@/generated/prisma/client";
 
 // ─── Auth Guard Helper ────────────────────────────────────────────────────────
 async function requireAdmin() {
@@ -130,45 +130,6 @@ export async function createCampaignRule(formData: FormData) {
   } catch (error) {
     console.error("[createCampaignRule] Error:", error);
     return { success: false, error: "Kural oluşturulamadı" };
-  }
-}
-
-export async function updateCampaignRule(id: string, formData: FormData) {
-  await requireAdmin();
-
-  try {
-    const parsed = RuleSchema.safeParse({
-      threshold: formData.get("threshold"),
-      rewardName: formData.get("rewardName"),
-      isResetPoint: formData.get("isResetPoint") === "true",
-    });
-
-    if (!parsed.success) {
-      return { success: false, error: parsed.error.issues[0]?.message };
-    }
-
-    // Check if threshold already exists for a different rule
-    const existing = await prisma.campaignRule.findUnique({
-      where: { threshold: parsed.data.threshold },
-    });
-
-    if (existing && existing.id !== id) {
-      return {
-        success: false,
-        error: "Bu eşik değeri başka bir kural tarafından kullanılıyor",
-      };
-    }
-
-    await prisma.campaignRule.update({
-      where: { id },
-      data: parsed.data,
-    });
-
-    revalidateCampaignSurfaces();
-    return { success: true };
-  } catch (error) {
-    console.error("[updateCampaignRule] Error:", error);
-    return { success: false, error: "Kural güncellenemedi" };
   }
 }
 
@@ -422,13 +383,12 @@ export async function toggleUserActive(id: string, isActive: boolean) {
 }
 
 export async function deleteStaffUser(id: string) {
-  await requireAdmin();
+  // requireAdmin() already resolves the session — no second auth() call.
+  const session = await requireAdmin();
 
   try {
-    const session = await auth();
-    
     // Prevent self-deletion
-    if (session?.user?.id === id) {
+    if (session.user.id === id) {
       return { success: false, error: "Kendi hesabınızı silemezsiniz" };
     }
 

@@ -5,12 +5,13 @@ import NextAuth from "next-auth";
 import type { Session, User } from "next-auth";
 import type { JWT } from "next-auth/jwt";
 import Credentials from "next-auth/providers/credentials";
-import { PrismaAdapter } from "@auth/prisma-adapter";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 
 const authConfig = {
-  adapter: PrismaAdapter(prisma),
+  // No database adapter: with the Credentials provider + JWT sessions,
+  // NextAuth never persists users/sessions itself, and the schema has no
+  // Account/Session/VerificationToken models for an adapter to use.
   session: { strategy: "jwt" as const },
   pages: {
     signIn: "/login",
@@ -38,6 +39,16 @@ const authConfig = {
         );
 
         if (!isValid) return null;
+
+        // Best-effort bookkeeping — must never block a successful login.
+        try {
+          await prisma.user.update({
+            where: { id: user.id },
+            data: { lastLoginAt: new Date() },
+          });
+        } catch (err) {
+          console.error("[auth] lastLoginAt update failed:", err);
+        }
 
         return {
           id: user.id,

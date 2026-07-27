@@ -4,7 +4,7 @@
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/lib/auth";
 import { revalidateStampSurfaces } from "@/lib/revalidate";
-import { Prisma } from "@prisma/client";
+import { Prisma } from "@/generated/prisma/client";
 import { isDbConnectionError } from "@/lib/db-errors";
 
 export type ClaimRewardResult =
@@ -43,19 +43,21 @@ export async function claimReward(
           throw new Error("REWARD_NOT_FOUND");
         }
 
-        // ─── 5. Validate Reward Status ─────────────────────────────────────────
-        if (reward.status !== "PENDING") {
-          throw new Error("REWARD_ALREADY_CLAIMED");
-        }
-
-        // ─── 6. Update Reward Status ───────────────────────────────────────────
-        await tx.reward.update({
-          where: { id: rewardId },
+        // ─── 5. Atomically Claim (status guard inside the WHERE) ───────────────
+        // A read-then-update lets two cashiers claim the same reward
+        // concurrently under ReadCommitted; the guarded updateMany makes the
+        // PENDING → CLAIMED transition atomic, so exactly one caller wins.
+        const claimed = await tx.reward.updateMany({
+          where: { id: rewardId, status: "PENDING" },
           data: {
             status: "CLAIMED",
             claimedAt: new Date(),
           },
         });
+
+        if (claimed.count === 0) {
+          throw new Error("REWARD_ALREADY_CLAIMED");
+        }
 
         return {
           rewardName: reward.rule.rewardName,
@@ -107,34 +109,5 @@ export async function claimReward(
       success: false,
       error: "Ödül kullanılamadı. Lütfen tekrar deneyin.",
     };
-  }
-}
-
-/**
- * Get all pending rewards for a customer
- */
-export async function getPendingRewards(customerId: string) {
-  const session = await auth();
-  if (!session?.user || !["STAFF", "ADMIN"].includes(session.user.role)) {
-    return null;
-  }
-
-  try {
-    return await prisma.reward.findMany({
-      where: {
-        customerId,
-        status: "PENDING",
-      },
-      include: {
-        rule: true,
-        order: true,
-      },
-      orderBy: {
-        createdAt: "desc",
-      },
-    });
-  } catch (error) {
-    console.error("[getPendingRewards] Error:", error);
-    return null;
   }
 }

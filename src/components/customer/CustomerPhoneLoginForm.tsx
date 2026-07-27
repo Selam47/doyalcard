@@ -3,7 +3,7 @@
 // src/components/customer/CustomerPhoneLoginForm.tsx
 // Two-step Firebase Phone Auth flow:
 //   Step 1 → Enter phone number, send OTP via Firebase invisible reCAPTCHA
-//   Step 2 → Enter 6-digit OTP, confirm, POST to /api/customer/auth, redirect
+//   Step 2 → Enter 6-digit OTP, confirm, POST ID token to /api/customer/auth
 //
 // reCAPTCHA lifecycle rules followed here:
 //  1. The container div is ALWAYS mounted (never conditionally rendered) and
@@ -71,10 +71,6 @@ export function CustomerPhoneLoginForm() {
   const recaptchaContainerRef = useRef<HTMLDivElement | null>(null);
   const otpInputsRef = useRef<(HTMLInputElement | null)[]>([]);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  // The exact E.164 number the OTP was actually sent to — used again at
-  // verify time so step 2 never recomputes (and potentially diverges from)
-  // the number step 1 sent to Firebase.
-  const sentPhoneRef = useRef<string>("");
 
   // ── destroyRecaptcha ──────────────────────────────────────────────────────
   // Fully tears down the verifier AND wipes the container innerHTML so
@@ -173,7 +169,6 @@ export function CustomerPhoneLoginForm() {
   const handleGoBackToPhone = useCallback(() => {
     destroyRecaptcha();
     confirmationRef.current = null;
-    sentPhoneRef.current = "";
     if (countdownRef.current) clearInterval(countdownRef.current);
     countdownRef.current = null;
     setResendCountdown(0);
@@ -199,7 +194,6 @@ export function CustomerPhoneLoginForm() {
 
       const result = await signInWithPhoneNumber(auth, fullPhone, verifier);
       confirmationRef.current = result;
-      sentPhoneRef.current = fullPhone;
 
       setStep("otp");
       startCountdown();
@@ -249,16 +243,15 @@ export function CustomerPhoneLoginForm() {
     setLoading(true);
     try {
       const credential = await confirmationRef.current.confirm(code);
-      const user = credential.user;
-      // Reuse the exact number the OTP was sent to — never recompute it,
-      // so step 2 can't drift from what Firebase actually verified.
-      const phone = sentPhoneRef.current;
+      // Send the Firebase ID token — the backend verifies its signature and
+      // reads the phone number from the verified claims, so the client never
+      // asserts its own identity.
+      const idToken = await credential.user.getIdToken();
 
-      // Send verified phone + Firebase UID to our backend
       const res = await fetch("/api/customer/auth", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone, firebaseUid: user.uid }),
+        body: JSON.stringify({ idToken }),
       });
 
       if (!res.ok) throw new Error("Backend auth failed");

@@ -42,19 +42,6 @@ export async function getActiveCampaignRules(): Promise<ActiveCampaignRule[]> {
 }
 
 /**
- * Fetch the SINGLE active campaign rule that defines the cycle, straight from
- * the database. Ordering makes the pick deterministic even if an admin leaves
- * several rules active at once.
- */
-export async function getActiveCycleRule(): Promise<ActiveCampaignRule | null> {
-  return prisma.campaignRule.findFirst({
-    where: { isActive: true },
-    orderBy: [{ isResetPoint: "desc" }, { threshold: "desc" }],
-    select: RULE_SELECT,
-  });
-}
-
-/**
  * The one call every stamp-rendering page/server-action should make.
  * Returns the active rules (for milestone styling) plus the authoritative
  * `maxStamps` used for the "x / maxStamps" counters and the grid size.

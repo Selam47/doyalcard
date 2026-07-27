@@ -78,12 +78,3 @@ export function clampCycleCount(count: number, maxStamps: number): number {
   if (!Number.isFinite(count) || count <= 0) return 0;
   return Math.min(Math.floor(count), maxStamps);
 }
-
-/**
- * @deprecated Use `getCampaignConfig()` (from `@/lib/campaign-rules.server`)
- * / `resolveMaxStamps()` instead. Kept as a thin alias so any remaining
- * caller resolves the identical number.
- */
-export function getCycleLength(rules: ActiveCampaignRule[]): number {
-  return resolveMaxStamps(pickCycleRule(rules));
-}

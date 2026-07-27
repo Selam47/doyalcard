@@ -1,8 +1,18 @@
 // prisma/seed.ts
-import { PrismaClient, Role, RewardStatus } from "@prisma/client";
+// Run via `prisma db seed` (tsx) — a plain script, so tsconfig path aliases
+// are not available: import the generated client by relative path.
+import { PrismaClient, Role, RewardStatus } from "../src/generated/prisma/client";
+import { PrismaPg } from "@prisma/adapter-pg";
 import bcrypt from "bcryptjs";
 
-const prisma = new PrismaClient();
+// Prisma 7 requires a driver adapter — instantiating PrismaClient() bare
+// fails at runtime. Seeding is a one-off script, so prefer the direct
+// (non-pooled) connection like the rest of the CLI tooling.
+const connectionString = process.env.DIRECT_URL ?? process.env.DATABASE_URL;
+if (!connectionString) {
+  throw new Error("DIRECT_URL (or DATABASE_URL) must be set to seed the database.");
+}
+const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString }) });
 
 async function main() {
   console.log("🌱 Starting seed...");
