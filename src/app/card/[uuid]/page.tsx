@@ -7,7 +7,7 @@ import { getCustomerByUuid } from "@/actions/customer";
 import { CustomerCardView } from "@/components/stamp-card/CustomerCardView";
 import { StaffActionPanel } from "@/components/staff/StaffActionPanel";
 import { generateQrDataUrl } from "@/lib/qr";
-import { getCampaignConfig } from "@/lib/campaign-rules";
+import { getCampaignConfig } from "@/lib/campaign-rules.server";
 
 // Customer stamp progress and staff-facing counters depend on live
 // campaign rules and order counts — never statically cache this page.

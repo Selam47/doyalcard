@@ -4,6 +4,12 @@
 // Neon's pooled connection string (DATABASE_URL) — no edge/WebSocket driver,
 // no Cloudflare-specific code. Migrations run separately against the direct
 // (non-pooled) DIRECT_URL, see prisma.config.ts.
+//
+// `server-only` makes any accidental import from a Client Component fail
+// loudly at build time instead of silently pulling `pg` (which needs Node's
+// `tls`/`net`) into the Webpack client bundle.
+import "server-only";
+
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";

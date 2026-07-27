@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import Link from "next/link";
-import { getCampaignConfig } from "@/lib/campaign-rules";
+import { getCampaignConfig } from "@/lib/campaign-rules.server";
 
 // The marketing copy below quotes live campaign thresholds/reward names —
 // never statically cache this page, or it could show stale rewards after

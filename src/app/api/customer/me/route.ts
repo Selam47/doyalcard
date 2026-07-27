@@ -6,7 +6,8 @@ import { NextResponse } from "next/server";
 import { getCustomerSession } from "@/lib/customer-session";
 import { prisma } from "@/lib/prisma";
 import { isDbConnectionError } from "@/lib/db-errors";
-import { clampCycleCount, getCampaignConfig } from "@/lib/campaign-rules";
+import { clampCycleCount } from "@/lib/campaign-rules";
+import { getCampaignConfig } from "@/lib/campaign-rules.server";
 
 // Reads live campaign_rules + per-customer counters — must never be
 // statically cached.

@@ -11,7 +11,7 @@ import { getCustomerById } from "@/actions/customer";
 import { generateQrDataUrl } from "@/lib/qr";
 import { CustomerCardView } from "@/components/stamp-card/CustomerCardView";
 import { CustomerPageShell } from "@/components/customer/CustomerPageShell";
-import { getCampaignConfig } from "@/lib/campaign-rules";
+import { getCampaignConfig } from "@/lib/campaign-rules.server";
 
 // Customer stamp progress depends on live campaign rules and order counts —
 // never statically cache this page.
