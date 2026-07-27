@@ -1,20 +1,163 @@
 // prisma/seed.ts
 // Run via `prisma db seed` (tsx) — a plain script, so tsconfig path aliases
 // are not available: import the generated client by relative path.
+import path from "node:path";
+import fs from "node:fs";
+import dotenv from "dotenv";
+import { Pool } from "pg";
 import { PrismaClient, Role, RewardStatus } from "../src/generated/prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import bcrypt from "bcryptjs";
 
-// Prisma 7 requires a driver adapter — instantiating PrismaClient() bare
-// fails at runtime. Seeding is a one-off script, so prefer the direct
-// (non-pooled) connection like the rest of the CLI tooling.
-const connectionString = process.env.DIRECT_URL ?? process.env.DATABASE_URL;
-if (!connectionString) {
-  throw new Error("DIRECT_URL (or DATABASE_URL) must be set to seed the database.");
+// ─── 0. Environment ─────────────────────────────────────────────────────────
+// `prisma db seed` spawns this file in a FRESH node process: the dotenv call
+// inside prisma.config.ts does not reach us, and Prisma 7 no longer auto-loads
+// .env. So load it here explicitly. Order matters — the first file to define a
+// key wins (dotenv never overwrites an already-set value), and a real shell
+// env var beats both.
+const projectRoot = path.resolve(__dirname, "..");
+const envFiles = [".env.local", ".env"];
+const loadedEnvFiles: string[] = [];
+
+for (const file of envFiles) {
+  const fullPath = path.join(projectRoot, file);
+  if (!fs.existsSync(fullPath)) continue;
+  const result = dotenv.config({ path: fullPath });
+  if (result.error) {
+    console.error(`⚠️  ${file} okunamadı:`, result.error);
+    continue;
+  }
+  loadedEnvFiles.push(file);
 }
-const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString }) });
+
+/** Prints a readable diagnostic block and exits with code 1. */
+function fail(title: string, details: string[], error?: unknown): never {
+  console.error(`\n❌ ${title}\n`);
+  for (const line of details) console.error(`   ${line}`);
+  if (error) {
+    console.error("\n──────── Ham hata ────────");
+    console.error(error);
+    if (error instanceof Error && error.stack) {
+      console.error("\n──────── Stack trace ────────");
+      console.error(error.stack);
+    }
+    // pg/Prisma hataları asıl sebebi çoğu zaman `cause` içinde taşır.
+    const cause = (error as { cause?: unknown })?.cause;
+    if (cause) {
+      console.error("\n──────── cause ────────");
+      console.error(cause);
+    }
+  }
+  console.error("");
+  process.exit(1);
+}
+
+// Seed her zaman DIRECT (havuzlanmamış) bağlantıyı tercih eder: PgBouncer'ın
+// transaction pooling modu uzun süreli seed işlemleri ve prepared statement'lar
+// için uygun değil. DATABASE_URL yalnızca yedek olarak kullanılır.
+const connectionString = process.env.DIRECT_URL ?? process.env.DATABASE_URL;
+const usingFallback = !process.env.DIRECT_URL && !!process.env.DATABASE_URL;
+
+if (!connectionString) {
+  fail("Veritabanı bağlantı bilgisi bulunamadı (DIRECT_URL / DATABASE_URL).", [
+    `Proje kökü      : ${projectRoot}`,
+    `Yüklenen dosyalar: ${loadedEnvFiles.length ? loadedEnvFiles.join(", ") : "(hiçbiri bulunamadı)"}`,
+    "",
+    "Yapılması gerekenler:",
+    "  1. Proje kökünde .env (veya .env.local) dosyası olduğundan emin ol.",
+    "  2. İçinde şu satır bulunmalı:",
+    '       DIRECT_URL="postgresql://<user>:<pass>@<host>/<db>?sslmode=require"',
+    "     (Neon panelinde 'Direct connection' — içinde '-pooler' GEÇMEYEN host.)",
+    "  3. Vercel kullanıyorsan: `vercel env pull .env.local`",
+  ]);
+}
+
+if (usingFallback) {
+  console.warn(
+    "⚠️  DIRECT_URL tanımlı değil — havuzlanmış DATABASE_URL ile devam ediliyor.\n" +
+      "    PgBouncer üzerinden seed sırasında bağlantı hataları görebilirsin."
+  );
+}
+
+// Bağlantı stringini erkenden doğrula: hatalı format hâlinde pg'nin anlamsız
+// "client password must be a string" gibi hatalarını görmek yerine net mesaj ver.
+let dbHost = "(bilinmiyor)";
+try {
+  const parsed = new URL(connectionString);
+  dbHost = parsed.host;
+  if (!/^postgres(ql)?:$/.test(parsed.protocol)) {
+    fail("Bağlantı stringi geçersiz.", [
+      `Beklenen şema: postgresql://  — bulunan: ${parsed.protocol}//`,
+    ]);
+  }
+} catch (e) {
+  fail("DIRECT_URL/DATABASE_URL geçerli bir URL değil.", [
+    "Değeri tırnak içine aldığından ve satır sonunda boşluk/; olmadığından emin ol.",
+  ], e);
+}
+
+console.log(
+  `🔌 Bağlanılıyor → ${dbHost} (${process.env.DIRECT_URL ? "DIRECT_URL" : "DATABASE_URL"})` +
+    (loadedEnvFiles.length ? ` [env: ${loadedEnvFiles.join(", ")}]` : "")
+);
+
+// Prisma 7'de datasource bloğunda `url` yok, bu yüzden bare `new PrismaClient()`
+// çalışmaz — driver adapter zorunlu. Runtime'daki singleton (src/lib/prisma.ts)
+// yerine seed'e özel, tek kullanımlık küçük bir pool açıyoruz: `server-only`
+// importunu tetiklemez ve iş bitince temiz şekilde kapanır.
+// max: 1 KULLANMA — Prisma bir upsert'ü kendi transaction'ı içinde çalıştırıp
+// aynı anda ikinci bir bağlantı istediğinde havuz tükenir ve script sessizce
+// kilitlenir. Küçük ama >1 bir havuz + timeout'lar güvenli taraf.
+const pool = new Pool({
+  connectionString,
+  max: 5,
+  connectionTimeoutMillis: 15_000,
+  idleTimeoutMillis: 10_000,
+  // Sessizce kopan TCP bağlantılarında script'in sonsuza kadar beklemesini
+  // engeller (NAT/firewall arkasında Neon'a bağlanırken sık görülür).
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 5_000,
+  // Neon compute uyanırken tek bir sorgu sonsuza kadar asılı kalmasın.
+  statement_timeout: 30_000,
+  query_timeout: 30_000,
+});
+
+pool.on("error", (err) => {
+  console.error("[seed] Boştaki Postgres istemcisinde hata:", err);
+});
+
+const prisma = new PrismaClient({ adapter: new PrismaPg(pool) });
+
+/** Bağlantıyı Prisma sorgularından önce dener; hatayı okunur hâle getirir. */
+async function assertConnection() {
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query("SELECT 1");
+    } finally {
+      client.release();
+    }
+    console.log("✅ Veritabanı bağlantısı doğrulandı.");
+  } catch (e) {
+    const code = (e as { code?: string }).code;
+    const hints: Record<string, string> = {
+      ENOTFOUND: `Host çözümlenemedi (${dbHost}). Bağlantı stringindeki host adını ve internet erişimini kontrol et.`,
+      ECONNREFUSED: "Bağlantı reddedildi. Port/host doğru mu, veritabanı ayakta mı?",
+      ETIMEDOUT: "Bağlantı zaman aşımına uğradı. Neon compute uykuda olabilir veya güvenlik duvarı/VPN engelliyor olabilir.",
+      "28P01": "Kimlik doğrulama başarısız — kullanıcı adı/parola hatalı. Neon'dan bağlantı stringini yeniden kopyala.",
+      "3D000": "Belirtilen veritabanı yok. URL'nin sonundaki /<db> kısmını kontrol et.",
+      "28000": "Kullanıcının bu veritabanına erişimi yok veya SSL zorunlu (?sslmode=require ekle).",
+    };
+    fail("Veritabanına bağlanılamadı.", [
+      `Host      : ${dbHost}`,
+      `Hata kodu : ${code ?? "(yok)"}`,
+      hints[code ?? ""] ?? "Bağlantı stringini ve ağ erişimini kontrol et.",
+    ], e);
+  }
+}
 
 async function main() {
+  await assertConnection();
   console.log("🌱 Starting seed...");
 
   // ─── 1. Branch ──────────────────────────────────────────────────────────────
@@ -97,6 +240,68 @@ async function main() {
     );
   }
 
+  // Kuralları bir kez oku; her sipariş döngüsünde findUnique atmak yerine
+  // threshold → kural haritasını bellekte tut (uzak DB'de round-trip pahalı).
+  const ruleByThreshold = new Map(
+    (await prisma.campaignRule.findMany()).map((r) => [r.threshold, r])
+  );
+
+  /** Deterministik id'lerle N sipariş oluşturur; tekrar çalıştırmada atlar. */
+  async function createOrders(
+    prefix: string,
+    customerId: string,
+    total: number
+  ) {
+    const data = Array.from({ length: total }, (_, idx) => {
+      const i = idx + 1;
+      return {
+        id: `${prefix}-${i.toString().padStart(3, "0")}`,
+        customerId,
+        branchId: branch.id,
+        staffId: staff.id,
+        createdAt: new Date(Date.now() - (total + 1 - i) * 24 * 60 * 60 * 1000),
+      };
+    });
+    // Tek INSERT — döngü içindeki N ayrı upsert yerine. skipDuplicates
+    // sayesinde seed tekrar çalıştırılabilir kalır.
+    const { count } = await prisma.order.createMany({
+      data,
+      skipDuplicates: true,
+    });
+    console.log(`   📦 ${total} sipariş (${count} yeni)`);
+    return data;
+  }
+
+  /** Belirli bir siparişe bağlı ödülü (varsa kural) oluşturur. */
+  async function createReward(opts: {
+    id: string;
+    customerId: string;
+    orderId: string;
+    threshold: number;
+    status: RewardStatus;
+    claimedAt?: Date;
+    label?: string;
+  }) {
+    const rule = ruleByThreshold.get(opts.threshold);
+    if (!rule) {
+      console.warn(`   ⚠️  threshold=${opts.threshold} için kural yok, ödül atlandı.`);
+      return;
+    }
+    await prisma.reward.upsert({
+      where: { orderId: opts.orderId },
+      update: {},
+      create: {
+        id: opts.id,
+        customerId: opts.customerId,
+        ruleId: rule.id,
+        orderId: opts.orderId,
+        status: opts.status,
+        claimedAt: opts.claimedAt,
+      },
+    });
+    console.log(`   ${opts.label ?? "⭐"} Reward: ${rule.rewardName} (${opts.status})`);
+  }
+
   // ─── 5. Mock Customer 1: Ali Yılmaz (5 orders, 1 pending reward) ───────────
   const customer1 = await prisma.customer.upsert({
     where: { phone: "+905551234567" },
@@ -114,43 +319,16 @@ async function main() {
   });
   console.log(`✅ Customer 1: ${customer1.name} (${customer1.phone})`);
 
-  // Create 5 orders for customer 1
-  for (let i = 1; i <= 5; i++) {
-    const order = await prisma.order.upsert({
-      where: { id: `order-c1-${i.toString().padStart(3, "0")}` },
-      update: {},
-      create: {
-        id: `order-c1-${i.toString().padStart(3, "0")}`,
-        customerId: customer1.id,
-        branchId: branch.id,
-        staffId: staff.id,
-        createdAt: new Date(Date.now() - (6 - i) * 24 * 60 * 60 * 1000),
-      },
-    });
+  await createOrders("order-c1", customer1.id, 5);
 
-    // On 5th order, create the pending AYRAN reward
-    if (i === 5) {
-      const ayranRule = await prisma.campaignRule.findUnique({
-        where: { threshold: 5 },
-      });
-      if (ayranRule) {
-        await prisma.reward.upsert({
-          where: { orderId: order.id },
-          update: {},
-          create: {
-            id: "reward-c1-ayran",
-            customerId: customer1.id,
-            ruleId: ayranRule.id,
-            orderId: order.id,
-            status: RewardStatus.PENDING,
-          },
-        });
-        console.log(
-          `   ⭐ Reward: ${ayranRule.rewardName} (PENDING)`
-        );
-      }
-    }
-  }
+  // 5. siparişte bekleyen AYRAN ödülü
+  await createReward({
+    id: "reward-c1-ayran",
+    customerId: customer1.id,
+    orderId: "order-c1-005",
+    threshold: 5,
+    status: RewardStatus.PENDING,
+  });
 
   // ─── 6. Mock Customer 2: Fatma Kaya (17 orders, completed 1 full cycle) ────
   const customer2 = await prisma.customer.upsert({
@@ -169,80 +347,35 @@ async function main() {
   });
   console.log(`✅ Customer 2: ${customer2.name} (${customer2.phone})`);
 
-  // Create 17 orders for customer 2
-  for (let i = 1; i <= 17; i++) {
-    const order = await prisma.order.upsert({
-      where: { id: `order-c2-${i.toString().padStart(3, "0")}` },
-      update: {},
-      create: {
-        id: `order-c2-${i.toString().padStart(3, "0")}`,
-        customerId: customer2.id,
-        branchId: branch.id,
-        staffId: staff.id,
-        createdAt: new Date(Date.now() - (18 - i) * 24 * 60 * 60 * 1000),
-      },
-    });
+  await createOrders("order-c2", customer2.id, 17);
 
-    // Milestone rewards for first cycle (orders 1-15)
-    if (i === 5) {
-      const ayranRule = await prisma.campaignRule.findUnique({
-        where: { threshold: 5 },
-      });
-      if (ayranRule) {
-        await prisma.reward.upsert({
-          where: { orderId: order.id },
-          update: {},
-          create: {
-            id: "reward-c2-ayran",
-            customerId: customer2.id,
-            ruleId: ayranRule.id,
-            orderId: order.id,
-            status: RewardStatus.CLAIMED,
-            claimedAt: new Date(Date.now() - 9 * 24 * 60 * 60 * 1000),
-          },
-        });
-        console.log(`   ⭐ Reward: ${ayranRule.rewardName} (CLAIMED)`);
-      }
-    } else if (i === 7) {
-      const sutlacRule = await prisma.campaignRule.findUnique({
-        where: { threshold: 7 },
-      });
-      if (sutlacRule) {
-        await prisma.reward.upsert({
-          where: { orderId: order.id },
-          update: {},
-          create: {
-            id: "reward-c2-sutlac",
-            customerId: customer2.id,
-            ruleId: sutlacRule.id,
-            orderId: order.id,
-            status: RewardStatus.CLAIMED,
-            claimedAt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
-          },
-        });
-        console.log(`   ⭐ Reward: ${sutlacRule.rewardName} (CLAIMED)`);
-      }
-    } else if (i === 15) {
-      const grandRule = await prisma.campaignRule.findUnique({
-        where: { threshold: 15 },
-      });
-      if (grandRule) {
-        await prisma.reward.upsert({
-          where: { orderId: order.id },
-          update: {},
-          create: {
-            id: "reward-c2-grand",
-            customerId: customer2.id,
-            ruleId: grandRule.id,
-            orderId: order.id,
-            status: RewardStatus.CLAIMED,
-            claimedAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000),
-          },
-        });
-        console.log(`   🎉 Grand Prize: ${grandRule.rewardName} (CLAIMED)`);
-      }
-    }
-  }
+  // İlk döngünün (1-15) kilometre taşı ödülleri
+  const day = 24 * 60 * 60 * 1000;
+  await createReward({
+    id: "reward-c2-ayran",
+    customerId: customer2.id,
+    orderId: "order-c2-005",
+    threshold: 5,
+    status: RewardStatus.CLAIMED,
+    claimedAt: new Date(Date.now() - 9 * day),
+  });
+  await createReward({
+    id: "reward-c2-sutlac",
+    customerId: customer2.id,
+    orderId: "order-c2-007",
+    threshold: 7,
+    status: RewardStatus.CLAIMED,
+    claimedAt: new Date(Date.now() - 7 * day),
+  });
+  await createReward({
+    id: "reward-c2-grand",
+    customerId: customer2.id,
+    orderId: "order-c2-015",
+    threshold: 15,
+    status: RewardStatus.CLAIMED,
+    claimedAt: new Date(Date.now() - 3 * day),
+    label: "🎉",
+  });
 
   console.log("\n✨ Seed complete!\n");
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -267,10 +400,47 @@ async function main() {
 }
 
 main()
-  .catch((e) => {
-    console.error("❌ Seed failed:", e);
-    process.exit(1);
-  })
-  .finally(async () => {
+  .then(async () => {
     await prisma.$disconnect();
+    await pool.end();
+    process.exit(0);
+  })
+  .catch(async (e) => {
+    console.error("\n❌ Seed başarısız oldu.\n");
+    console.error("──────── Hata ────────");
+    console.error(e);
+
+    if (e instanceof Error) {
+      console.error("\n──────── Stack trace ────────");
+      console.error(e.stack ?? "(stack yok)");
+    }
+
+    // Prisma hataları: hangi kural/hangi alan patladı bilgisi burada.
+    const meta = (e as { code?: string; meta?: unknown }) ?? {};
+    if (meta.code) console.error(`\nPrisma/PG hata kodu: ${meta.code}`);
+    if (meta.meta) {
+      console.error("meta:", JSON.stringify(meta.meta, null, 2));
+    }
+
+    // Asıl sebep genellikle zincirin en altındadır.
+    let cause: unknown = (e as { cause?: unknown })?.cause;
+    let depth = 0;
+    while (cause && depth < 5) {
+      console.error(`\n──────── cause [${depth}] ────────`);
+      console.error(cause);
+      if (cause instanceof Error && cause.stack) console.error(cause.stack);
+      cause = (cause as { cause?: unknown })?.cause;
+      depth++;
+    }
+
+    console.error(
+      "\n💡 Sık karşılaşılanlar:\n" +
+        "   • P2021 / 'relation does not exist' → önce `npx prisma db push` (veya migrate deploy) çalıştır.\n" +
+        "   • 'PrismaClient did not initialize' → `npx prisma generate` çalıştır.\n" +
+        "   • Bağlantı/timeout → .env içindeki DIRECT_URL'i ve Neon compute durumunu kontrol et.\n"
+    );
+
+    await prisma.$disconnect().catch(() => {});
+    await pool.end().catch(() => {});
+    process.exit(1);
   });
