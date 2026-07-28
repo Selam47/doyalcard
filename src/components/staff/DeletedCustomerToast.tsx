@@ -26,11 +26,26 @@ export function DeletedCustomerToast({ customerName }: Props) {
     if (hasShown.current) return;
     hasShown.current = true;
 
-    toast.success(`🗑️ "${customerName}" ve tüm kayıtları silindi`, {
-      duration: 5000,
+    let cancelled = false;
+
+    // Both calls write state synchronously — `toast.success` pushes into
+    // Sonner's external store and `router.replace` kicks off a navigation.
+    // Running them straight from the effect body is what
+    // `react-hooks/set-state-in-effect` flags, so they are queued past the
+    // effect's own commit.
+    queueMicrotask(() => {
+      if (cancelled) return;
+
+      toast.success(`🗑️ "${customerName}" ve tüm kayıtları silindi`, {
+        duration: 5000,
+      });
+
+      router.replace("/staff", { scroll: false });
     });
 
-    router.replace("/staff", { scroll: false });
+    return () => {
+      cancelled = true;
+    };
   }, [customerName, router]);
 
   return null;

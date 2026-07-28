@@ -52,7 +52,14 @@ export function NearRewardSection() {
       if (!cancelled) void load();
     };
 
-    void load();
+    // Deferred to a microtask rather than called straight from the effect
+    // body: `load()` resolves its first `setState` eagerly enough that the
+    // React Compiler's `react-hooks/set-state-in-effect` rule treats it as a
+    // synchronous set, which would cascade an extra render pass. Queuing it
+    // moves the state write past the effect's own commit.
+    queueMicrotask(() => {
+      if (!cancelled) void load();
+    });
 
     const pollId = window.setInterval(refresh, POLL_MS);
     document.addEventListener("visibilitychange", refresh);
