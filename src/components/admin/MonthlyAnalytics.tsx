@@ -29,6 +29,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { monthIndex, SYSTEM_START_INDEX } from "@/lib/analytics-range";
 import { cn } from "@/lib/utils";
 
 // Hard-coded rather than Intl.DateTimeFormat: the labels render during SSR of
@@ -47,11 +48,15 @@ const MONTHS_SHORT = [
 /** Turkish grouping: 1234 → "1.234". */
 const nf = new Intl.NumberFormat("tr-TR");
 
-/** How many past months the selector offers. */
-const SELECTABLE_MONTHS = 24;
+/**
+ * Upper bound on how many past months the selector offers. It never reaches
+ * back past the system's launch month (SYSTEM_START_INDEX), so until that
+ * many months have elapsed since launch, the list is shorter than this.
+ */
+const MAX_SELECTABLE_MONTHS = 24;
 
 const SERIES = {
-  visits: { label: "Ziyaret", color: "var(--chart-2)" },
+  registrations: { label: "Kayıt", color: "var(--chart-2)" },
   orders: { label: "Sipariş", color: "var(--chart-1)" },
   rewards: { label: "Ödül", color: "var(--chart-3)" },
 } as const;
@@ -114,21 +119,33 @@ export function MonthlyAnalytics({ currentYear, currentMonth, branches }: Props)
   const data = isLoading ? null : (fetched?.data ?? null);
   const error = isLoading ? null : (fetched?.error ?? null);
 
-  // Absolute month index makes "is the selection in the future?" a plain
-  // comparison instead of nested year/month checks.
-  const selectedIndex = year * 12 + month;
-  const currentIndex = currentYear * 12 + currentMonth;
+  // Absolute month index makes "is the selection in the future / before
+  // launch?" a plain integer comparison instead of nested year/month checks.
+  // Computed via the shared helper so this component can never drift from
+  // the range logic used elsewhere (e.g. the server action).
+  const selectedIndex = monthIndex(year, month);
+  const currentIndex = monthIndex(currentYear, currentMonth);
   const isAtCurrentMonth = selectedIndex >= currentIndex;
+  const isAtSystemStart = selectedIndex <= SYSTEM_START_INDEX;
 
   function shiftMonth(delta: number) {
     const next = selectedIndex + delta;
-    if (next > currentIndex) return;
+    // Never allow navigating into the future or before the system's launch
+    // month — there is no data on either side of that window.
+    if (next > currentIndex || next < SYSTEM_START_INDEX) return;
     setYear(Math.floor(next / 12));
     setMonth(next % 12);
   }
 
   const monthOptions = useMemo(() => {
-    return Array.from({ length: SELECTABLE_MONTHS }, (_, i) => {
+    // Cap the list so it never reaches back past the system's launch month,
+    // even if MAX_SELECTABLE_MONTHS would otherwise allow it (e.g. right
+    // after launch, when fewer than 24 months of history exist at all).
+    const monthCount = Math.min(
+      MAX_SELECTABLE_MONTHS,
+      currentIndex - SYSTEM_START_INDEX + 1
+    );
+    return Array.from({ length: monthCount }, (_, i) => {
       const index = currentIndex - i;
       const y = Math.floor(index / 12);
       const m = index % 12;
@@ -148,7 +165,7 @@ export function MonthlyAnalytics({ currentYear, currentMonth, branches }: Props)
   }, [data]);
 
   const hasTrendData = trendData.some(
-    (p) => p.visits > 0 || p.orders > 0 || p.rewards > 0
+    (p) => p.registrations > 0 || p.orders > 0 || p.rewards > 0
   );
 
   const selectClass =
@@ -188,7 +205,8 @@ export function MonthlyAnalytics({ currentYear, currentMonth, branches }: Props)
               type="button"
               aria-label="Önceki ay"
               onClick={() => shiftMonth(-1)}
-              className="inline-flex size-9 items-center justify-center rounded-lg border border-border bg-background text-foreground transition-colors hover:bg-muted"
+              disabled={isAtSystemStart}
+              className="inline-flex size-9 items-center justify-center rounded-lg border border-border bg-background text-foreground transition-colors hover:bg-muted disabled:pointer-events-none disabled:opacity-40"
             >
               <ChevronLeft className="size-4" />
             </button>
@@ -232,10 +250,10 @@ export function MonthlyAnalytics({ currentYear, currentMonth, branches }: Props)
       {/* ─── KPI cards ────────────────────────────────────────────────────── */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <KpiCard
-          title="Müşteri Ziyareti"
-          hint="Bu ay en az bir sipariş veren tekil müşteri"
-          kpi={data?.kpis.visits}
-          accent={SERIES.visits.color}
+          title="Müşteri Kaydı"
+          hint="Bu ay sisteme kayıt olan / işlem yapan tekil müşteri"
+          kpi={data?.kpis.registrations}
+          accent={SERIES.registrations.color}
           isLoading={isLoading}
         />
         <KpiCard
@@ -243,7 +261,7 @@ export function MonthlyAnalytics({ currentYear, currentMonth, branches }: Props)
           hint="Bu ay verilen damga sayısı"
           kpi={data?.kpis.orders}
           accent={SERIES.orders.color}
-          isLoading={isLoading}
+          isLoading={isLoading} 
         />
         <KpiCard
           title="Kullanılan Ödül"
@@ -259,7 +277,7 @@ export function MonthlyAnalytics({ currentYear, currentMonth, branches }: Props)
         <CardHeader className="px-6">
           <CardTitle>Son 12 Ay Trendi</CardTitle>
           <CardDescription>
-            Ziyaret, sipariş ve ödül sayılarının aylık seyri
+            Kayıt, sipariş ve ödül sayılarının aylık seyri
           </CardDescription>
         </CardHeader>
         <CardContent className="px-2 sm:px-6">
@@ -436,7 +454,10 @@ function KpiCard({ title, hint, kpi, accent, isLoading }: KpiCardProps) {
             <div className="flex flex-wrap items-center gap-2 text-xs">
               <ChangeBadge changePct={kpi.changePct} />
               <span className="text-muted-foreground">
-                önceki ay {nf.format(kpi.previous)}
+                önceki ay{" "}
+                {typeof kpi.previous === "number"
+                  ? nf.format(kpi.previous)
+                  : "—"}
               </span>
             </div>
           </>
@@ -448,7 +469,8 @@ function KpiCard({ title, hint, kpi, accent, isLoading }: KpiCardProps) {
 }
 
 function ChangeBadge({ changePct }: { changePct: number | null }) {
-  // No baseline (previous month was zero) — a percentage would be meaningless.
+  // No baseline (previous month was zero, or this is the system's launch
+  // month with no prior month at all) — a percentage would be meaningless.
   if (changePct === null) {
     return (
       <span className="rounded-md bg-muted px-1.5 py-0.5 font-medium text-muted-foreground">

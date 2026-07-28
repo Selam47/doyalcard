@@ -75,7 +75,7 @@
      shipped defaults were all neutral greys — unusable for a multi-series
      chart. 4/5 stay neutral for secondary marks. */
   --chart-1: oklch(0.55 0.15 145); /* brand green  — siparişler */
-  --chart-2: oklch(0.6 0.15 250); /* blue         — ziyaretler */
+  --chart-2: oklch(0.6 0.15 250); /* blue         — kayıtlar   */
   --chart-3: oklch(0.72 0.15 70); /* amber        — ödüller    */
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
