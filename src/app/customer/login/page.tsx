@@ -1,7 +1,7 @@
 // src/app/customer/login/page.tsx
 import type { Metadata } from "next";
 
-import { redirect } from "next/navigation";
+import Link from "next/link";
 import { getCustomerSession } from "@/lib/customer-session";
 import { CustomerPhoneLoginForm } from "@/components/customer/CustomerPhoneLoginForm";
 
@@ -11,9 +11,16 @@ export const metadata: Metadata = {
 };
 
 export default async function CustomerLoginPage() {
-  // If already logged in, redirect straight to dashboard
+  // If already logged in, the client form redirects straight to the
+  // dashboard — but only on a fresh visit. We intentionally do NOT redirect
+  // here on the server: a server-side redirect() fires on every render of
+  // this route, including the render triggered by the browser Back button.
+  // That was bouncing logged-in customers straight back to /customer/dashboard
+  // whenever they pressed Back from here, permanently trapping them and
+  // preventing Back from ever reaching "/". See CustomerPhoneLoginForm for
+  // the back/forward-aware client-side redirect.
   const session = await getCustomerSession();
-  if (session) redirect("/customer/dashboard");
+  const alreadyLoggedIn = Boolean(session);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-green-950 via-green-900 to-emerald-800 p-4">
@@ -45,15 +52,15 @@ export default async function CustomerLoginPage() {
             </p>
           </div>
 
-          <CustomerPhoneLoginForm />
+          <CustomerPhoneLoginForm alreadyLoggedIn={alreadyLoggedIn} />
         </div>
 
         {/* Personel link */}
         <p className="text-center text-xs text-white/40 mt-6">
           Personel misiniz?{" "}
-          <a href="/login" className="text-green-300 hover:text-white transition-colors underline">
+          <Link href="/login" className="text-green-300 hover:text-white transition-colors underline">
             Personel Girişi
-          </a>
+          </Link>
         </p>
       </div>
     </div>

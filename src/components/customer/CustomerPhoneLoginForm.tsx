@@ -54,8 +54,27 @@ const COUNTRY_CODES = [
 
 type Step = "phone" | "otp";
 
-export function CustomerPhoneLoginForm() {
+interface CustomerPhoneLoginFormProps {
+  /** True when a valid customer session cookie already exists server-side. */
+  alreadyLoggedIn?: boolean;
+}
+
+export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhoneLoginFormProps) {
   const router = useRouter();
+
+  // ── Redirect already-logged-in customers, but never on Back/Forward ────────
+  // A server-side redirect() in page.tsx used to handle this, but it fired on
+  // every render of this route — including the render triggered by the
+  // browser Back button — which bounced logged-in customers straight back to
+  // /customer/dashboard and made it impossible to Back out to "/". The
+  // Navigation Timing API lets us tell a fresh visit apart from a
+  // back/forward navigation and only redirect in the former case.
+  useEffect(() => {
+    if (!alreadyLoggedIn) return;
+    const [entry] = performance.getEntriesByType("navigation") as PerformanceNavigationTiming[];
+    if (entry?.type === "back_forward") return;
+    router.replace("/customer/dashboard");
+  }, [alreadyLoggedIn, router]);
 
   // ── State ─────────────────────────────────────────────────────────────────
   const [step, setStep] = useState<Step>("phone");

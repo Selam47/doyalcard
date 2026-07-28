@@ -5,7 +5,7 @@ import path from "node:path";
 import fs from "node:fs";
 import dotenv from "dotenv";
 import { Pool } from "pg";
-import { PrismaClient, Role, RewardStatus } from "../src/generated/prisma/client";
+import { PrismaClient, Role } from "../src/generated/prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import bcrypt from "bcryptjs";
 
@@ -188,23 +188,7 @@ async function main() {
   });
   console.log(`✅ Admin created: ${admin.email}`);
 
-  // ─── 3. Staff User ──────────────────────────────────────────────────────────
-  const staffHash = await bcrypt.hash("Staff1234!", 12);
-  const staff = await prisma.user.upsert({
-    where: { email: "personel@ekremdoner.com" },
-    update: {},
-    create: {
-      id: "user-staff-001",
-      name: "Ahmet Personel",
-      email: "personel@ekremdoner.com",
-      passwordHash: staffHash,
-      role: Role.STAFF,
-      branchId: branch.id,
-    },
-  });
-  console.log(`✅ Staff created: ${staff.email}`);
-
-  // ─── 4. Campaign Rules (3 default rules) ────────────────────────────────────
+  // ─── 3. Campaign Rules (3 default rules) ────────────────────────────────────
   const rules = [
     {
       id: "rule-001",
@@ -240,162 +224,10 @@ async function main() {
     );
   }
 
-  // Kuralları bir kez oku; her sipariş döngüsünde findUnique atmak yerine
-  // threshold → kural haritasını bellekte tut (uzak DB'de round-trip pahalı).
-  const ruleByThreshold = new Map(
-    (await prisma.campaignRule.findMany()).map((r) => [r.threshold, r])
-  );
-
-  /** Deterministik id'lerle N sipariş oluşturur; tekrar çalıştırmada atlar. */
-  async function createOrders(
-    prefix: string,
-    customerId: string,
-    total: number
-  ) {
-    const data = Array.from({ length: total }, (_, idx) => {
-      const i = idx + 1;
-      return {
-        id: `${prefix}-${i.toString().padStart(3, "0")}`,
-        customerId,
-        branchId: branch.id,
-        staffId: staff.id,
-        createdAt: new Date(Date.now() - (total + 1 - i) * 24 * 60 * 60 * 1000),
-      };
-    });
-    // Tek INSERT — döngü içindeki N ayrı upsert yerine. skipDuplicates
-    // sayesinde seed tekrar çalıştırılabilir kalır.
-    const { count } = await prisma.order.createMany({
-      data,
-      skipDuplicates: true,
-    });
-    console.log(`   📦 ${total} sipariş (${count} yeni)`);
-    return data;
-  }
-
-  /** Belirli bir siparişe bağlı ödülü (varsa kural) oluşturur. */
-  async function createReward(opts: {
-    id: string;
-    customerId: string;
-    orderId: string;
-    threshold: number;
-    status: RewardStatus;
-    claimedAt?: Date;
-    label?: string;
-  }) {
-    const rule = ruleByThreshold.get(opts.threshold);
-    if (!rule) {
-      console.warn(`   ⚠️  threshold=${opts.threshold} için kural yok, ödül atlandı.`);
-      return;
-    }
-    await prisma.reward.upsert({
-      where: { orderId: opts.orderId },
-      update: {},
-      create: {
-        id: opts.id,
-        customerId: opts.customerId,
-        ruleId: rule.id,
-        orderId: opts.orderId,
-        status: opts.status,
-        claimedAt: opts.claimedAt,
-      },
-    });
-    console.log(`   ${opts.label ?? "⭐"} Reward: ${rule.rewardName} (${opts.status})`);
-  }
-
-  // ─── 5. Mock Customer 1: Ali Yılmaz (5 orders, 1 pending reward) ───────────
-  const customer1 = await prisma.customer.upsert({
-    where: { phone: "+905551234567" },
-    update: {},
-    create: {
-      id: "customer-001",
-      name: "Ali Yılmaz",
-      phone: "+905551234567",
-      qrUuid: "aaaaaaaa-0000-0000-0000-000000000001",
-      currentCycleCount: 5,
-      lifetimeCount: 5,
-      kvkkConsent: true,
-      branchId: branch.id,
-    },
-  });
-  console.log(`✅ Customer 1: ${customer1.name} (${customer1.phone})`);
-
-  await createOrders("order-c1", customer1.id, 5);
-
-  // 5. siparişte bekleyen AYRAN ödülü
-  await createReward({
-    id: "reward-c1-ayran",
-    customerId: customer1.id,
-    orderId: "order-c1-005",
-    threshold: 5,
-    status: RewardStatus.PENDING,
-  });
-
-  // ─── 6. Mock Customer 2: Fatma Kaya (17 orders, completed 1 full cycle) ────
-  const customer2 = await prisma.customer.upsert({
-    where: { phone: "+905559876543" },
-    update: {},
-    create: {
-      id: "customer-002",
-      name: "Fatma Kaya",
-      phone: "+905559876543",
-      qrUuid: "bbbbbbbb-0000-0000-0000-000000000002",
-      currentCycleCount: 2, // Completed 1 cycle (15) + 2 more
-      lifetimeCount: 17,
-      kvkkConsent: true,
-      branchId: branch.id,
-    },
-  });
-  console.log(`✅ Customer 2: ${customer2.name} (${customer2.phone})`);
-
-  await createOrders("order-c2", customer2.id, 17);
-
-  // İlk döngünün (1-15) kilometre taşı ödülleri
-  const day = 24 * 60 * 60 * 1000;
-  await createReward({
-    id: "reward-c2-ayran",
-    customerId: customer2.id,
-    orderId: "order-c2-005",
-    threshold: 5,
-    status: RewardStatus.CLAIMED,
-    claimedAt: new Date(Date.now() - 9 * day),
-  });
-  await createReward({
-    id: "reward-c2-sutlac",
-    customerId: customer2.id,
-    orderId: "order-c2-007",
-    threshold: 7,
-    status: RewardStatus.CLAIMED,
-    claimedAt: new Date(Date.now() - 7 * day),
-  });
-  await createReward({
-    id: "reward-c2-grand",
-    customerId: customer2.id,
-    orderId: "order-c2-015",
-    threshold: 15,
-    status: RewardStatus.CLAIMED,
-    claimedAt: new Date(Date.now() - 3 * day),
-    label: "🎉",
-  });
-
   console.log("\n✨ Seed complete!\n");
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
   console.log("🔑 Login Credentials:");
   console.log("   Admin  → admin@ekremdoner.com   / Admin1234!");
-  console.log("   Staff  → personel@ekremdoner.com / Staff1234!");
-  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  console.log("🧑‍💼 Mock Customers:");
-  console.log(
-    "   Ali Yılmaz  → /card/aaaaaaaa-0000-0000-0000-000000000001"
-  );
-  console.log(
-    "      (5 stamps, 1 pending Ayran reward)"
-  );
-  console.log(
-    "   Fatma Kaya  → /card/bbbbbbbb-0000-0000-0000-000000000002"
-  );
-  console.log(
-    "      (17 lifetime orders, 2 current cycle, 3 claimed rewards)"
-  );
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 }
 
