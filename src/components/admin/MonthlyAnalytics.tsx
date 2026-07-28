@@ -13,7 +13,15 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { ChevronLeft, ChevronRight, TrendingDown, TrendingUp } from "lucide-react";
+import {
+  Award,
+  ChevronLeft,
+  ChevronRight,
+  ShoppingBag,
+  TrendingDown,
+  TrendingUp,
+  Users,
+} from "lucide-react";
 
 import {
   getMonthlyAnalytics,
@@ -55,10 +63,15 @@ const nf = new Intl.NumberFormat("tr-TR");
  */
 const MAX_SELECTABLE_MONTHS = 24;
 
+// Brand-aligned, CVD-validated categorical triad (light/dark pairs — see
+// dataviz palette check): warm red/orange for orders, emerald for new
+// registrations, amber/gold for rewards. Defined as CSS custom properties on
+// the section root (below) rather than the shared --chart-* tokens so this
+// dashboard's palette can't drift when those tokens change elsewhere.
 const SERIES = {
-  registrations: { label: "Kayıt", color: "var(--chart-2)" },
-  orders: { label: "Sipariş", color: "var(--chart-1)" },
-  rewards: { label: "Ödül", color: "var(--chart-3)" },
+  registrations: { label: "Kayıt", color: "var(--chart-registrations)", icon: Users },
+  orders: { label: "Sipariş", color: "var(--chart-orders)", icon: ShoppingBag },
+  rewards: { label: "Ödül", color: "var(--chart-rewards)", icon: Award },
 } as const;
 
 interface Props {
@@ -172,7 +185,15 @@ export function MonthlyAnalytics({ currentYear, currentMonth, branches }: Props)
     "h-9 rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50";
 
   return (
-    <section className="space-y-4">
+    <section
+      className={cn(
+        "space-y-4",
+        // Brand triad — validated for lightness band, chroma floor, CVD
+        // separation and surface contrast in both modes (dataviz skill).
+        "[--chart-registrations:#0f9d68] [--chart-orders:#e8622d] [--chart-rewards:#b45309]",
+        "dark:[--chart-registrations:#20a877] dark:[--chart-orders:#e0703f] dark:[--chart-rewards:#c47f1e]"
+      )}
+    >
       {/* ─── Header + filters ─────────────────────────────────────────────── */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
@@ -254,6 +275,7 @@ export function MonthlyAnalytics({ currentYear, currentMonth, branches }: Props)
           hint="Bu ay sisteme kayıt olan / işlem yapan tekil müşteri"
           kpi={data?.kpis.registrations}
           accent={SERIES.registrations.color}
+          icon={SERIES.registrations.icon}
           isLoading={isLoading}
         />
         <KpiCard
@@ -261,13 +283,15 @@ export function MonthlyAnalytics({ currentYear, currentMonth, branches }: Props)
           hint="Bu ay verilen damga sayısı"
           kpi={data?.kpis.orders}
           accent={SERIES.orders.color}
-          isLoading={isLoading} 
+          icon={SERIES.orders.icon}
+          isLoading={isLoading}
         />
         <KpiCard
           title="Kullanılan Ödül"
           hint="Bu ay teslim edilen ödüller"
           kpi={data?.kpis.rewards}
           accent={SERIES.rewards.color}
+          icon={SERIES.rewards.icon}
           isLoading={isLoading}
         />
       </div>
@@ -301,8 +325,9 @@ export function MonthlyAnalytics({ currentYear, currentMonth, branches }: Props)
                       x2="0"
                       y2="1"
                     >
-                      <stop offset="5%" stopColor={series.color} stopOpacity={0.35} />
-                      <stop offset="95%" stopColor={series.color} stopOpacity={0.02} />
+                      <stop offset="0%" stopColor={series.color} stopOpacity={0.45} />
+                      <stop offset="60%" stopColor={series.color} stopOpacity={0.12} />
+                      <stop offset="100%" stopColor={series.color} stopOpacity={0} />
                     </linearGradient>
                   ))}
                 </defs>
@@ -325,11 +350,8 @@ export function MonthlyAnalytics({ currentYear, currentMonth, branches }: Props)
                   allowDecimals={false}
                   tickFormatter={(value: number) => nf.format(value)}
                 />
-                <Tooltip content={<ChartTooltip />} />
-                <Legend
-                  iconType="circle"
-                  wrapperStyle={{ fontSize: 12, paddingTop: 8 }}
-                />
+                <Tooltip content={<ChartTooltip />} cursor={{ stroke: "var(--border)", strokeWidth: 1 }} />
+                <Legend content={<ChartLegend />} />
                 {(Object.keys(SERIES) as Array<keyof typeof SERIES>).map((key) => (
                   <Area
                     key={key}
@@ -337,10 +359,10 @@ export function MonthlyAnalytics({ currentYear, currentMonth, branches }: Props)
                     dataKey={key}
                     name={SERIES[key].label}
                     stroke={SERIES[key].color}
-                    strokeWidth={2}
+                    strokeWidth={2.5}
                     fill={`url(#trend-${key})`}
                     dot={false}
-                    activeDot={{ r: 4 }}
+                    activeDot={{ r: 5, strokeWidth: 2, stroke: "var(--card)" }}
                   />
                 ))}
               </AreaChart>
@@ -367,7 +389,18 @@ export function MonthlyAnalytics({ currentYear, currentMonth, branches }: Props)
               <BarChart
                 data={data.daily}
                 margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
+                barGap={4}
               >
+                <defs>
+                  <linearGradient id="daily-orders" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={SERIES.orders.color} stopOpacity={0.95} />
+                    <stop offset="100%" stopColor={SERIES.orders.color} stopOpacity={0.55} />
+                  </linearGradient>
+                  <linearGradient id="daily-rewards" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={SERIES.rewards.color} stopOpacity={0.95} />
+                    <stop offset="100%" stopColor={SERIES.rewards.color} stopOpacity={0.55} />
+                  </linearGradient>
+                </defs>
                 <CartesianGrid
                   strokeDasharray="3 3"
                   stroke="var(--border)"
@@ -390,24 +423,23 @@ export function MonthlyAnalytics({ currentYear, currentMonth, branches }: Props)
                   tickFormatter={(value: number) => nf.format(value)}
                 />
                 <Tooltip
-                  cursor={{ fill: "var(--muted)", opacity: 0.5 }}
+                  cursor={{ fill: "var(--muted)", opacity: 0.4 }}
                   content={<ChartTooltip labelPrefix="Gün " />}
                 />
-                <Legend
-                  iconType="circle"
-                  wrapperStyle={{ fontSize: 12, paddingTop: 8 }}
-                />
+                <Legend content={<ChartLegend />} />
                 <Bar
                   dataKey="orders"
                   name={SERIES.orders.label}
-                  fill={SERIES.orders.color}
-                  radius={[4, 4, 0, 0]}
+                  fill="url(#daily-orders)"
+                  radius={[6, 6, 0, 0]}
+                  maxBarSize={28}
                 />
                 <Bar
                   dataKey="rewards"
                   name={SERIES.rewards.label}
-                  fill={SERIES.rewards.color}
-                  radius={[4, 4, 0, 0]}
+                  fill="url(#daily-rewards)"
+                  radius={[6, 6, 0, 0]}
+                  maxBarSize={28}
                 />
               </BarChart>
             </ResponsiveContainer>
@@ -424,23 +456,48 @@ interface KpiCardProps {
   hint: string;
   kpi: Kpi | undefined;
   accent: string;
+  icon: React.ComponentType<{ className?: string }>;
   isLoading: boolean;
 }
 
-function KpiCard({ title, hint, kpi, accent, isLoading }: KpiCardProps) {
+function KpiCard({ title, hint, kpi, accent, icon: Icon, isLoading }: KpiCardProps) {
   return (
-    <Card className="gap-3 py-6 shadow-sm">
-      <CardHeader className="px-6">
-        <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+    <Card
+      className="group relative gap-3 overflow-hidden py-6 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg"
+      style={{
+        borderColor: `color-mix(in oklab, ${accent} 22%, var(--border))`,
+      }}
+    >
+      {/* Subtle accent glow, brightens slightly on hover — purely decorative. */}
+      <div
+        className="pointer-events-none absolute -top-10 -right-10 size-32 rounded-full opacity-[0.14] blur-2xl transition-opacity duration-300 group-hover:opacity-25"
+        style={{ backgroundColor: accent }}
+        aria-hidden
+      />
+
+      <CardHeader className="relative px-6">
+        <CardTitle className="flex items-center justify-between gap-2">
+          <span className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+            <span
+              className="size-2.5 rounded-full"
+              style={{ backgroundColor: accent }}
+              aria-hidden
+            />
+            {title}
+          </span>
           <span
-            className="size-2.5 rounded-full"
-            style={{ backgroundColor: accent }}
+            className="flex size-9 shrink-0 items-center justify-center rounded-xl"
+            style={{
+              backgroundColor: `color-mix(in oklab, ${accent} 16%, transparent)`,
+              color: accent,
+            }}
             aria-hidden
-          />
-          {title}
+          >
+            <Icon className="size-4.5" />
+          </span>
         </CardTitle>
       </CardHeader>
-      <CardContent className="space-y-2 px-6">
+      <CardContent className="relative space-y-2 px-6">
         {isLoading || !kpi ? (
           <>
             <Skeleton className="h-9 w-24" />
@@ -519,26 +576,55 @@ function ChartTooltip({
   if (!active || !payload?.length) return null;
 
   return (
-    <div className="rounded-lg border border-border bg-popover px-3 py-2 text-xs shadow-md">
-      <div className="mb-1 font-semibold text-popover-foreground">
+    <div className="rounded-xl border border-border/70 bg-card/90 px-3.5 py-2.5 text-xs shadow-lg backdrop-blur-md">
+      <div className="mb-1.5 font-semibold text-card-foreground">
         {labelPrefix}
         {label}
       </div>
-      <div className="space-y-0.5">
+      <div className="space-y-1">
         {payload.map((entry) => (
-          <div key={entry.name} className="flex items-center gap-2">
+          <div key={entry.name} className="flex items-center gap-2.5">
             <span
-              className="size-2 rounded-full"
-              style={{ backgroundColor: entry.color }}
+              className="size-2 shrink-0 rounded-full"
+              style={{
+                backgroundColor: entry.color,
+                boxShadow: `0 0 0 3px color-mix(in oklab, ${entry.color ?? "transparent"} 20%, transparent)`,
+              }}
               aria-hidden
             />
             <span className="text-muted-foreground">{entry.name}</span>
-            <span className="ml-auto font-semibold text-popover-foreground">
+            <span className="ml-auto font-semibold tabular-nums text-card-foreground">
               {nf.format(entry.value ?? 0)}
             </span>
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function ChartLegend({
+  payload,
+}: {
+  payload?: Array<{ value?: string; color?: string }>;
+}) {
+  if (!payload?.length) return null;
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
+      {payload.map((entry) => (
+        <span
+          key={entry.value}
+          className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/40 px-2.5 py-1 text-xs font-medium text-foreground"
+        >
+          <span
+            className="size-2 rounded-full"
+            style={{ backgroundColor: entry.color }}
+            aria-hidden
+          />
+          {entry.value}
+        </span>
+      ))}
     </div>
   );
 }
