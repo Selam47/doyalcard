@@ -2,6 +2,9 @@
 import type { Metadata } from "next";
 
 import { getDashboardStats } from "@/actions/admin";
+import { getAnalyticsBranches } from "@/actions/analytics";
+import { MonthlyAnalytics } from "@/components/admin/MonthlyAnalytics";
+import { currentIstanbulMonth } from "@/lib/istanbul-time";
 import Link from "next/link";
 
 // Stats (orders, rewards, pending rewards) change continuously — never
@@ -11,7 +14,13 @@ export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Admin Dashboard" };
 
 export default async function AdminDashboard() {
-  const stats = await getDashboardStats();
+  const [stats, branches] = await Promise.all([
+    getDashboardStats(),
+    getAnalyticsBranches(),
+  ]);
+
+  // Resolved server-side so SSR and hydration agree on "the current month".
+  const today = currentIstanbulMonth();
 
   const cards = [
     { 
@@ -130,6 +139,13 @@ export default async function AdminDashboard() {
           ))}
         </div>
       </div>
+
+      {/* Monthly Analytics */}
+      <MonthlyAnalytics
+        currentYear={today.year}
+        currentMonth={today.month}
+        branches={branches}
+      />
 
       {/* System Info */}
       <div className="grid gap-4 md:grid-cols-2">

@@ -70,9 +70,13 @@
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.55 0.15 145); /* Green ring */
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
+  /* Chart series. 1 is the brand green; 2 and 3 are complementary hues held at
+     a similar lightness/chroma so no series visually outranks another. The
+     shipped defaults were all neutral greys — unusable for a multi-series
+     chart. 4/5 stay neutral for secondary marks. */
+  --chart-1: oklch(0.55 0.15 145); /* brand green  — siparişler */
+  --chart-2: oklch(0.6 0.15 250); /* blue         — ziyaretler */
+  --chart-3: oklch(0.72 0.15 70); /* amber        — ödüller    */
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
   --radius: 0.625rem;
@@ -105,9 +109,10 @@
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
+  /* Same three hues, lifted for contrast against the dark surface. */
+  --chart-1: oklch(0.7 0.15 145);
+  --chart-2: oklch(0.7 0.14 250);
+  --chart-3: oklch(0.8 0.14 70);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
   --sidebar: oklch(0.205 0 0);
