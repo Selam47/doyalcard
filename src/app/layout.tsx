@@ -32,8 +32,12 @@ export const metadata: Metadata = {
   // Vercel Deployment Protection / auth yönlendirmeleri altında manifest isteğinin
   // cookie'lerle gitmesi gerektiği için link etiketini <head> içinde elle basıyoruz.
   icons: {
-    icon: "/favicon.ico",
-    shortcut: "/favicon-32x32.png",
+    icon: [
+      { url: "/favicon.ico", sizes: "any" },
+      { url: "/favicon-16x16.png", sizes: "16x16", type: "image/png" },
+      { url: "/favicon-32x32.png", sizes: "32x32", type: "image/png" },
+    ],
+    shortcut: "/favicon.ico",
     apple: "/apple-touch-icon.png",
   },
   appleWebApp: {
