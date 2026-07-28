@@ -3,6 +3,8 @@ import type { Metadata } from "next";
 import { QrScannerSection } from "@/components/staff/QrScannerSection";
 import { PhoneSearchSection } from "@/components/staff/PhoneSearchSection";
 import { DeletedCustomerToast } from "@/components/staff/DeletedCustomerToast";
+import { RecentActivitySection } from "@/components/staff/RecentActivitySection";
+import { NearRewardSection } from "@/components/staff/NearRewardSection";
 
 export const metadata: Metadata = { title: "Personel Paneli" };
 
@@ -31,6 +33,14 @@ export default async function StaffPage({ searchParams }: Props) {
       <div className="grid gap-6 md:grid-cols-2">
         <QrScannerSection />
         <PhoneSearchSection />
+      </div>
+
+      {/* Glanceable branch context under the two action tools. Both fetch
+          their own data client-side (Server Actions + polling), so they never
+          block the scanner above from rendering. */}
+      <div className="grid gap-6 md:grid-cols-2 items-start">
+        <RecentActivitySection />
+        <NearRewardSection />
       </div>
     </div>
   );
