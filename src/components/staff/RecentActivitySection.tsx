@@ -128,7 +128,7 @@ export function RecentActivitySection() {
             {items.map((item) => (
               <li key={item.id}>
                 <Link
-                  href={`/card/${item.customerQrUuid}`}
+                  href={`/staff/customer/${item.customerQrUuid}`}
                   className="flex items-center gap-3 py-2.5 -mx-2 px-2 rounded-lg hover:bg-gray-50 transition-colors"
                 >
                   <span

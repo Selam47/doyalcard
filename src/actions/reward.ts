@@ -2,7 +2,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
-import { auth } from "@/lib/auth";
+import { authorizeStaff } from "@/lib/staff-guard";
 import { revalidateStampSurfaces } from "@/lib/revalidate";
 import { Prisma } from "@/generated/prisma/client";
 import { isDbConnectionError } from "@/lib/db-errors";
@@ -19,10 +19,8 @@ export async function claimReward(
   rewardId: string
 ): Promise<ClaimRewardResult> {
   // ─── 1. Authentication & Authorization ─────────────────────────────────────
-  const session = await auth();
-  if (!session?.user || !["STAFF", "ADMIN"].includes(session.user.role)) {
-    return { success: false, error: "Yetkisiz erişim" };
-  }
+  const guard = await authorizeStaff();
+  if (!guard.ok) return { success: false, error: guard.error };
 
   // ─── 2. Input Validation ───────────────────────────────────────────────────
   if (!rewardId || typeof rewardId !== "string") {

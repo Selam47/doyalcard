@@ -21,6 +21,11 @@ export function revalidateStampSurfaces(qrUuid?: string | null): void {
   revalidatePath("/card/[uuid]", "page");
   if (qrUuid) revalidatePath(`/card/${qrUuid}`);
 
+  // Staff till — same customer, same counters, separate dynamic route. Missing
+  // this leaves the cashier looking at a stale count right after they stamp.
+  revalidatePath("/staff/customer/[uuid]", "page");
+  if (qrUuid) revalidatePath(`/staff/customer/${qrUuid}`);
+
   // Self-service customer dashboard renders the same card component.
   revalidatePath("/customer/dashboard");
 

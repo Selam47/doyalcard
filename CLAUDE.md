@@ -32,7 +32,29 @@ This project is a **Stamp-Card (Damga Kartı) Customer Loyalty System** designed
 - NextAuth Credentials provider: email + bcrypt-verified password, JWT session carrying `id`, `role`, `branchId`, `branchName`.
 - Inactive accounts (`isActive: false`) are rejected in `authorize()` — deactivating a user is an immediate lockout.
 
-### 3. Cashier Operation (`/staff`) & Admin Panel (`/admin`)
+### 3. Card Routes — Read Surface vs. Action Surface (SECURITY CRITICAL)
+
+Two distinct routes render a stamp card. Never merge them.
+
+| Route | Who may open it | What it renders |
+| --- | --- | --- |
+| `/card/[uuid]` | The card's own customer (customer cookie must match) **or** active staff | Read-only card. **Zero** action buttons — the file does not import `StaffActionPanel`, `DeleteCustomerButton` or any mutation. |
+| `/staff/customer/[uuid]` | Active `STAFF` / `ADMIN` only | Read-only card **plus** the staff action panel (`+1 Sipariş`, `-1 Damga`, `Müşteriyi Sil`). |
+
+- The public `/card/[uuid]` route MUST NOT gain an action button, ever. A role check that decides whether to render controls is one bug away from rendering them; the guarantee here is structural — the controls are not reachable from that module at all.
+- Anonymous visitors are rejected **before** the customer row is fetched, so the route cannot be used to probe which UUIDs exist. Read authorization lives in `src/lib/card-access.ts` (`resolveCardAccess` / `resolveStaffCardAccess`), which is a plain `server-only` module — deliberately NOT `"use server"`, because every export of a `"use server"` file is a publicly callable endpoint.
+- The customer's QR still encodes `/card/<uuid>` (that is what the customer's own phone opens). The staff scanner rewrites it to `/staff/customer/<uuid>` after decoding.
+
+### 3a. Role Checks Must Hit the Database
+
+`auth()` only decodes the JWT, which carries the role from **login time** and stays valid for its full lifetime. Never gate anything privileged on it directly. Use `src/lib/staff-guard.ts`:
+
+- `getStaffPrincipal()` → `StaffPrincipal | null`, re-read from the `users` table.
+- `authorizeStaff({ adminOnly? })` → `{ ok, staff } | { ok: false, error }` for Server Actions.
+
+Both fail **closed** — a lookup error, missing row, `isActive: false` row or unexpected role resolves to unauthorized. This is what makes the "deactivating a user is an immediate lockout" promise true; without it a deactivated or demoted account keeps its old privileges for up to 30 days. Also derive `branchId` / `staffId` from the principal, never from `session.user`. There is no `CASHIER` role — the enum is `STAFF | ADMIN`.
+
+### 4. Cashier Operation (`/staff`) & Admin Panel (`/admin`)
 - Staff searches by phone or scans the customer's personal QR code.
 - **+1 order = +1 stamp.** No purchase amount is entered and nothing is multiplied into points.
 - When `currentCycleCount` reaches the active cycle rule's `threshold`, a `Reward` row is created with status `PENDING` and the cycle counter resets to 0. Non-reset (milestone) rules grant an extra `PENDING` reward at their exact threshold.

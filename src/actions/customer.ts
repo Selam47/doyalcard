@@ -2,7 +2,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
-import { auth } from "@/lib/auth";
+import { authorizeStaff } from "@/lib/staff-guard";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { Prisma } from "@/generated/prisma/client";
@@ -44,10 +44,9 @@ export async function registerCustomer(
   formData: FormData
 ): Promise<RegisterResult> {
   // ─── 1. Authentication & Authorization ─────────────────────────────────────
-  const session = await auth();
-  if (!session?.user || !["STAFF", "ADMIN"].includes(session.user.role)) {
-    return { success: false, error: "Yetkisiz erişim" };
-  }
+  const guard = await authorizeStaff();
+  if (!guard.ok) return { success: false, error: guard.error };
+  const { staff } = guard;
 
   try {
     // ─── 2. Parse & Validate Input ─────────────────────────────────────────────
@@ -98,7 +97,7 @@ export async function registerCustomer(
         phone: normalizedPhone,
         kvkkConsent: true,
         kvkkConsentAt: new Date(),
-        branchId: session.user.branchId ?? null,
+        branchId: staff.branchId,
       },
       select: { id: true, qrUuid: true, name: true, phone: true },
     });
@@ -171,17 +170,12 @@ export async function deleteCustomer(
 ): Promise<DeleteCustomerResult> {
   // ─── 1. Authentication & Authorization ─────────────────────────────────────
   // Enforced *inside* the Server Action — a hidden button is not a permission
-  // check, and Server Actions are publicly callable endpoints.
-  const session = await auth();
-  if (!session?.user) {
-    return { success: false, error: "Oturum bulunamadı. Lütfen tekrar giriş yapın." };
-  }
-  if (session.user.role !== "ADMIN") {
-    return {
-      success: false,
-      error: "Yetkisiz erişim: Müşteri silme yalnızca yöneticiye açıktır",
-    };
-  }
+  // check, and Server Actions are publicly callable endpoints. The ADMIN role
+  // is read from the database, so an account demoted or deactivated since its
+  // token was issued cannot erase a customer.
+  const guard = await authorizeStaff({ adminOnly: true });
+  if (!guard.ok) return { success: false, error: guard.error };
+  const { staff } = guard;
 
   // ─── 2. Input Validation ───────────────────────────────────────────────────
   if (typeof customerId !== "string" || customerId.trim().length === 0) {
@@ -254,7 +248,7 @@ export async function deleteCustomer(
   }
 
   console.log(
-    `[deleteCustomer] ${deleted.name} (${id}) deleted by ${session.user.email ?? session.user.id}`
+    `[deleteCustomer] ${deleted.name} (${id}) deleted by ${staff.email}`
   );
 
   // ─── 6. Cache Invalidation ─────────────────────────────────────────────────
@@ -275,10 +269,8 @@ export async function deleteCustomer(
  */
 export async function searchCustomerByPhone(phone: string) {
   // ─── 1. Authentication Check ───────────────────────────────────────────────
-  const session = await auth();
-  if (!session?.user || !["STAFF", "ADMIN"].includes(session.user.role)) {
-    return null;
-  }
+  const guard = await authorizeStaff();
+  if (!guard.ok) return null;
 
   // ─── 2. Input Validation ───────────────────────────────────────────────────
   if (!phone || typeof phone !== "string" || phone.trim().length < 3) {
@@ -320,45 +312,16 @@ export async function searchCustomerByPhone(phone: string) {
   }
 }
 
-/**
- * Get customer by UUID (Public — for /card/[uuid] route)
- * No authentication required - customers need to view their own cards
- */
-export async function getCustomerByUuid(uuid: string) {
-  // ─── 1. Input Validation ───────────────────────────────────────────────────
-  if (!uuid || typeof uuid !== "string") {
-    return null;
-  }
-
-  try {
-    // ─── 2. Fetch Customer Data ────────────────────────────────────────────────
-    const customer = await prisma.customer.findUnique({
-      where: { qrUuid: uuid },
-      select: {
-        id: true,
-        name: true,
-        phone: true,
-        qrUuid: true,
-        currentCycleCount: true,
-        lifetimeCount: true,
-        createdAt: true,
-        branch: { select: { name: true, location: true } },
-        rewards: {
-          orderBy: { createdAt: "desc" },
-          include: {
-            rule: true,
-            order: { select: { createdAt: true } },
-          },
-        },
-      },
-    });
-
-    return customer;
-  } catch (error) {
-    console.error("[getCustomerByUuid] Error:", error);
-    return null;
-  }
-}
+// NOTE: `getCustomerByUuid()` used to live here as an UNAUTHENTICATED exported
+// Server Action. Because every export of a "use server" module is a publicly
+// callable endpoint, anyone who guessed or harvested a qrUuid could pull a
+// customer's name, phone, order history and reward history straight out of the
+// database — no session of any kind required.
+//
+// The query now lives in `src/lib/card-access.ts`, which is a plain
+// server-only module (NOT a Server Action), and every caller goes through
+// `resolveCardAccess()` / `resolveStaffCardAccess()` so read access is proven
+// before the row is fetched.
 
 /**
  * Get customer by ID (for the customer self-service dashboard)

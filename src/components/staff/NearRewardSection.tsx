@@ -125,7 +125,7 @@ export function NearRewardSection() {
                 return (
                   <li key={customer.id}>
                     <Link
-                      href={`/card/${customer.qrUuid}`}
+                      href={`/staff/customer/${customer.qrUuid}`}
                       className="flex items-center gap-3 py-2.5 -mx-2 px-2 rounded-lg hover:bg-gray-50 transition-colors"
                     >
                       <span

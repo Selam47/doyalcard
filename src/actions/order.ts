@@ -2,7 +2,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
-import { auth } from "@/lib/auth";
+import { authorizeStaff } from "@/lib/staff-guard";
 import { Prisma } from "@/generated/prisma/client";
 import { isDbConnectionError } from "@/lib/db-errors";
 import { revalidateStampSurfaces } from "@/lib/revalidate";
@@ -70,10 +70,12 @@ export type AddOrderResult =
  */
 export async function addOrder(customerId: string): Promise<AddOrderResult> {
   // ─── 1. Authentication & Authorization ─────────────────────────────────────
-  const session = await auth();
-  if (!session?.user || !["STAFF", "ADMIN"].includes(session.user.role)) {
-    return { success: false, error: "Yetkisiz erişim" };
-  }
+  // Re-verified from the DATABASE on every call, not from the JWT: a Server
+  // Action is a publicly callable endpoint, and a deactivated cashier's token
+  // stays cryptographically valid until it expires.
+  const guard = await authorizeStaff();
+  if (!guard.ok) return { success: false, error: guard.error };
+  const { staff } = guard;
 
   // ─── 2. Input Validation ───────────────────────────────────────────────────
   if (!customerId || typeof customerId !== "string") {
@@ -131,8 +133,8 @@ export async function addOrder(customerId: string): Promise<AddOrderResult> {
       const order = await tx.order.create({
         data: {
           customerId: customer.id,
-          branchId: session.user.branchId ?? null,
-          staffId: session.user.id,
+          branchId: staff.branchId,
+          staffId: staff.id,
         },
       });
 
@@ -236,10 +238,8 @@ export async function removeStamp(
   customerId: string
 ): Promise<RemoveStampResult> {
   // ─── 1. Authentication & Authorization ─────────────────────────────────────
-  const session = await auth();
-  if (!session?.user || !["STAFF", "ADMIN"].includes(session.user.role)) {
-    return { success: false, error: "Yetkisiz erişim" };
-  }
+  const guard = await authorizeStaff();
+  if (!guard.ok) return { success: false, error: guard.error };
 
   // ─── 2. Input Validation ───────────────────────────────────────────────────
   if (!customerId || typeof customerId !== "string") {

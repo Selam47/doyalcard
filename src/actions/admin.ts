@@ -2,8 +2,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
-import { auth } from "@/lib/auth";
-import type { Session } from "next-auth";
+import { getStaffPrincipal, type StaffPrincipal } from "@/lib/staff-guard";
 import { revalidatePath } from "next/cache";
 import { revalidateCampaignSurfaces } from "@/lib/revalidate";
 import { isDbConnectionError } from "@/lib/db-errors";
@@ -23,36 +22,41 @@ import { Prisma } from "@/generated/prisma/client";
 //
 //  • requireAdmin() — for READS rendered by a Server Component page, where a
 //    thrown error is caught by the route's error boundary as intended.
+//
+// Both resolve the caller through getStaffPrincipal(), which re-reads the user
+// row from the DATABASE. Trusting `auth()` alone would mean an admin who was
+// demoted to STAFF, deactivated, or deleted keeps full staff-management and
+// campaign-rule powers until their JWT expires — up to 30 days.
 type AdminGuard =
-  | { ok: true; session: Session }
+  | { ok: true; staff: StaffPrincipal }
   | { ok: false; error: string };
 
 async function ensureAdmin(): Promise<AdminGuard> {
-  const session = await auth();
+  const staff = await getStaffPrincipal();
 
-  if (!session?.user) {
+  if (!staff) {
     return {
       ok: false,
       error: "Oturum bulunamadı veya süresi doldu. Lütfen tekrar giriş yapın.",
     };
   }
 
-  if (session.user.role !== "ADMIN") {
+  if (!staff.isAdmin) {
     return {
       ok: false,
       error: "Yetkisiz erişim: Bu işlem yalnızca yönetici hesabına açıktır.",
     };
   }
 
-  return { ok: true, session };
+  return { ok: true, staff };
 }
 
-async function requireAdmin() {
+async function requireAdmin(): Promise<StaffPrincipal> {
   const guard = await ensureAdmin();
   if (!guard.ok) {
     throw new Error(guard.error);
   }
-  return guard.session;
+  return guard.staff;
 }
 
 // ─── Shared Error Mapper ──────────────────────────────────────────────────────
@@ -526,7 +530,7 @@ export async function createStaffUser(formData: FormData) {
 export async function toggleUserActive(id: string, isActive: boolean) {
   const guard = await ensureAdmin();
   if (!guard.ok) return { success: false, error: guard.error };
-  const { session } = guard;
+  const { staff } = guard;
 
   if (!id || typeof id !== "string") {
     return { success: false, error: "Geçersiz kullanıcı kimliği" };
@@ -535,7 +539,7 @@ export async function toggleUserActive(id: string, isActive: boolean) {
 
   // authorize() rejects `!user.isActive`, so deactivating yourself is an
   // instant self-lockout on the next request.
-  if (!isActive && session.user.id === userId) {
+  if (!isActive && staff.id === userId) {
     return {
       success: false,
       error: "Kendi hesabınızı devre dışı bırakamazsınız.",
@@ -606,7 +610,7 @@ export async function deleteStaffUser(
 ): Promise<DeleteStaffUserResult> {
   const guard = await ensureAdmin();
   if (!guard.ok) return { success: false, error: guard.error };
-  const { session } = guard;
+  const { staff } = guard;
 
   // ─── Input validation ──────────────────────────────────────────────────────
   if (typeof id !== "string" || id.trim().length === 0) {
@@ -617,7 +621,7 @@ export async function deleteStaffUser(
   // ─── Self-deletion ─────────────────────────────────────────────────────────
   // Checked before any DB round-trip: it is an authorization decision, not a
   // data problem.
-  if (session.user.id === userId) {
+  if (staff.id === userId) {
     return {
       success: false,
       error:

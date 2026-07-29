@@ -22,11 +22,13 @@ export function QrScannerSection() {
         { facingMode: "environment" },
         { fps: 10, qrbox: { width: 250, height: 250 } },
         (decodedText) => {
-          // Extract UUID from the URL
+          // The customer's QR still encodes the public /card/<uuid> URL — that
+          // is what the customer's own phone opens. Staff scanning it are sent
+          // to the staff till instead, which is where the actions live.
           const match = decodedText.match(/\/card\/([a-f0-9-]{36})/i);
           if (match?.[1]) {
             stopScanner();
-            router.push(`/card/${match[1]}`);
+            router.push(`/staff/customer/${match[1]}`);
           }
         },
         () => {} // ignore per-frame errors

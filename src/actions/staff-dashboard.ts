@@ -2,7 +2,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
-import { auth } from "@/lib/auth";
+import { authorizeStaff } from "@/lib/staff-guard";
 import { isDbConnectionError } from "@/lib/db-errors";
 import { getCampaignConfig } from "@/lib/campaign-rules.server";
 import { clampCycleCount } from "@/lib/campaign-rules";
@@ -42,21 +42,15 @@ type Scope =
   | { ok: false; error: string };
 
 async function resolveScope(): Promise<Scope> {
-  const session = await auth();
+  // Role AND branch come from the database row, not the JWT. A staffer moved
+  // to a different branch would otherwise keep reading their old branch's
+  // customer list until their token expired.
+  const guard = await authorizeStaff();
+  if (!guard.ok) return { ok: false, error: guard.error };
+  const { staff } = guard;
 
-  if (!session?.user) {
-    return {
-      ok: false,
-      error: "Oturum bulunamadı veya süresi doldu. Lütfen tekrar giriş yapın.",
-    };
-  }
-
-  if (!["STAFF", "ADMIN"].includes(session.user.role)) {
-    return { ok: false, error: "Yetkisiz erişim" };
-  }
-
-  const branchId = session.user.branchId ?? null;
-  const unscopedAdmin = session.user.role === "ADMIN" && branchId === null;
+  const branchId = staff.branchId;
+  const unscopedAdmin = staff.isAdmin && branchId === null;
 
   return {
     ok: true,

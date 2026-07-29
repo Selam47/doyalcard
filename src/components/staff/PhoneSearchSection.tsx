@@ -84,7 +84,7 @@ export function PhoneSearchSection() {
             </div>
             <button
               id="go-to-card-btn"
-              onClick={() => router.push(`/card/${result.qrUuid}`)}
+              onClick={() => router.push(`/staff/customer/${result.qrUuid}`)}
               className="px-4 py-2 bg-green-600 text-white text-sm font-semibold rounded-lg hover:bg-green-500 transition-colors"
             >
               Karta Git →

@@ -2,7 +2,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
-import { auth } from "@/lib/auth";
+import { getStaffPrincipal } from "@/lib/staff-guard";
 import { isDbConnectionError } from "@/lib/db-errors";
 import { Prisma } from "@/generated/prisma/client";
 import { ISTANBUL_OFFSET_HOURS } from "@/lib/istanbul-time";
@@ -99,17 +99,19 @@ export interface BranchOption {
 // endpoint reachable by its action id from anywhere — it re-checks the role
 // itself. Returns a result instead of throwing, per the project's error
 // contract (a thrown action reaches the client as an opaque digest).
+// The role is re-read from the database, not taken from the JWT, so a demoted
+// or deactivated admin loses access to revenue analytics immediately.
 async function ensureAdmin(): Promise<{ ok: true } | { ok: false; error: string }> {
-  const session = await auth();
+  const staff = await getStaffPrincipal();
 
-  if (!session?.user) {
+  if (!staff) {
     return {
       ok: false,
       error: "Oturum bulunamadı veya süresi doldu. Lütfen tekrar giriş yapın.",
     };
   }
 
-  if (session.user.role !== "ADMIN") {
+  if (!staff.isAdmin) {
     return {
       ok: false,
       error: "Yetkisiz erişim: Bu rapor yalnızca yönetici hesabına açıktır.",

@@ -1,35 +1,65 @@
 // src/app/card/[uuid]/page.tsx
+//
+// PUBLIC-FACING CARD — STRICTLY READ-ONLY.
+//
+// This route renders a stamp card and nothing else. It has NO import of
+// StaffActionPanel, DeleteCustomerButton or any mutation, so no combination of
+// session, role, cookie or crafted URL can make an action button appear here.
+// That is the point: "+1 Sipariş", "-1 Damga" and "Müşteriyi Sil" live on
+// /staff/customer/[uuid], behind the middleware-protected /staff prefix.
+//
+// Read access itself is gated too — see src/lib/card-access.ts. A card is
+// KVKK personal data, so knowing the UUID is not enough: the viewer must be
+// the customer who owns it, or active staff.
 import type { Metadata } from "next";
 
-import { notFound } from "next/navigation";
-import { auth } from "@/lib/auth";
-import { getCustomerByUuid } from "@/actions/customer";
+import Link from "next/link";
+import { notFound, redirect } from "next/navigation";
+import { resolveCardAccess } from "@/lib/card-access";
 import { CustomerCardView } from "@/components/stamp-card/CustomerCardView";
-import { StaffActionPanel } from "@/components/staff/StaffActionPanel";
 import { InstallPrompt } from "@/components/customer/InstallPrompt";
 import { generateQrDataUrl } from "@/lib/qr";
 import { getCampaignConfig } from "@/lib/campaign-rules.server";
 
-// Customer stamp progress and staff-facing counters depend on live
-// campaign rules and order counts — never statically cache this page.
+// Stamp progress depends on live campaign rules and order counts, and the page
+// output varies per viewer — never statically cache it.
 export const dynamic = "force-dynamic";
 
 interface Props {
   params: Promise<{ uuid: string }>;
 }
 
-export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  const { uuid } = await params;
-  const customer = await getCustomerByUuid(uuid);
-  if (!customer) return { title: "Müşteri Bulunamadı" };
-  return { title: `${customer.name} — Sadakat Kartı` };
-}
+// Deliberately static. The old implementation put the customer's real name in
+// the <title>, which leaked it to anyone who requested the URL — including
+// link-preview crawlers in group chats — before any authorization ran.
+export const metadata: Metadata = {
+  title: "Sadakat Kartı — Ekrem Coşkun Döner",
+  robots: { index: false, follow: false },
+};
 
 export default async function CardPage({ params }: Props) {
   const { uuid } = await params;
-  const [customer, session, qrDataUrl, campaign] = await Promise.all([
-    getCustomerByUuid(uuid),
-    auth(),
+
+  // ── Authorization ─────────────────────────────────────────────────────────
+  const access = await resolveCardAccess(uuid);
+
+  if (access.status === "unauthenticated") {
+    // No session of any kind. Customers sign in with their phone number; the
+    // customer login page carries a "Personel Girişi" link for staff.
+    redirect("/customer/login");
+  }
+
+  if (access.status === "forbidden") {
+    // Signed-in customer following somebody else's QR — bounce them to their
+    // own card rather than confirming that the other card exists.
+    redirect("/customer/dashboard");
+  }
+
+  if (access.status === "not-found") notFound();
+
+  const { customer, staff } = access;
+
+  const [qrDataUrl, campaign] = await Promise.all([
     generateQrDataUrl(uuid),
     // Single source of truth: the active CampaignRule row decides how many
     // stamp slots EVERY card shows — never the customer record, never a
@@ -37,10 +67,6 @@ export default async function CardPage({ params }: Props) {
     getCampaignConfig(),
   ]);
 
-  if (!customer) notFound();
-
-  const isAdmin = session?.user?.role === "ADMIN";
-  const isStaff = session?.user?.role === "STAFF" || isAdmin;
   const { rules: activeRules, maxStamps } = campaign;
 
   return (
@@ -51,18 +77,13 @@ export default async function CardPage({ params }: Props) {
           <span className="text-2xl">🫓</span>
           <span className="text-white font-bold text-lg">Ekrem Coşkun Döner</span>
         </div>
-        {isStaff && (
-          <span className="text-xs bg-amber-500 text-amber-950 px-2 py-1 rounded-full font-semibold">
-            Personel Görünümü
-          </span>
-        )}
       </header>
 
       <main className="max-w-2xl mx-auto px-4 pb-8 space-y-4">
         {/* Non-intrusive "Ana Ekrana Ekle" (Add to Home Screen) banner */}
         <InstallPrompt />
 
-        {/* Always show the customer card */}
+        {/* The ONLY thing this route renders: the read-only card. */}
         <CustomerCardView
           customer={customer}
           qrDataUrl={qrDataUrl}
@@ -70,22 +91,19 @@ export default async function CardPage({ params }: Props) {
           maxStamps={maxStamps}
         />
 
-        {/* Staff panel appears below when logged in */}
-        {isStaff && (
-          <StaffActionPanel
-            customer={{
-              id: customer.id,
-              name: customer.name,
-              phone: customer.phone,
-              currentCycleCount: customer.currentCycleCount,
-              lifetimeCount: customer.lifetimeCount,
-            }}
-            pendingRewards={customer.rewards
-              .filter((r) => r.status === "PENDING")
-              .map((r) => ({ id: r.id, rewardName: r.rule.rewardName, createdAt: r.createdAt }))}
-            maxStamps={maxStamps}
-            isAdmin={isAdmin}
-          />
+        {/*
+          Staff get a LINK to the till, never the controls themselves. The
+          destination re-authorizes on its own, so this link grants nothing —
+          it is a shortcut, not a permission.
+        */}
+        {staff && (
+          <Link
+            href={`/staff/customer/${uuid}`}
+            className="flex items-center justify-center gap-2 w-full py-3 rounded-2xl bg-amber-500/90 hover:bg-amber-400 text-amber-950 font-semibold text-sm transition-colors"
+          >
+            <span>⚡</span>
+            Personel İşlem Paneline Git
+          </Link>
         )}
       </main>
     </div>

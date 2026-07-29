@@ -22,7 +22,7 @@ export function RegisterForm() {
         toast.error(result.error);
       } else {
         toast.success(`✅ ${result.customer.name} başarıyla kaydedildi!`);
-        router.push(`/card/${result.customer.qrUuid}`);
+        router.push(`/staff/customer/${result.customer.qrUuid}`);
       }
     });
   }
