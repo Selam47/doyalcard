@@ -38,7 +38,17 @@ const NEAR_REWARD_LIMIT = 25;
  * `branchId: null` slice.
  */
 type Scope =
-  | { ok: true; orderWhere: Prisma.OrderWhereInput; customerWhere: Prisma.CustomerWhereInput }
+  | {
+      ok: true;
+      orderWhere: Prisma.OrderWhereInput;
+      customerWhere: Prisma.CustomerWhereInput;
+      /**
+       * True only for the unfiltered ADMIN view, i.e. the result set may mix
+       * branches. The UI uses this to decide whether a branch label carries
+       * information — inside a single branch it is noise on every row.
+       */
+      crossBranch: boolean;
+    }
   | { ok: false; error: string };
 
 async function resolveScope(): Promise<Scope> {
@@ -56,6 +66,7 @@ async function resolveScope(): Promise<Scope> {
     ok: true,
     orderWhere: unscopedAdmin ? {} : { branchId },
     customerWhere: unscopedAdmin ? {} : { branchId },
+    crossBranch: unscopedAdmin,
   };
 }
 
@@ -64,18 +75,33 @@ export interface ActivityItem {
   id: string;
   /** ISO string — Date instances are re-serialised per call, strings are stable. */
   createdAt: string;
+
+  // ── WHO THE STAMP BELONGS TO (primary line) ──────────────────────────────
   customerId: string;
   customerName: string;
   customerPhone: string;
   customerQrUuid: string;
+
+  // ── WHO PERFORMED IT (secondary line) ────────────────────────────────────
   /** null when the staff account was deleted (Order.staffId is SetNull). */
   staffName: string | null;
+  /** null when the branch was deleted (Order.branchId is SetNull) or unset. */
+  branchName: string | null;
+
+  /**
+   * Stamp delta this row represents. Always +1 today: an Order row IS a stamp,
+   * and `removeStamp` DELETES the row rather than writing a -1 correction, so
+   * no negative row can exist to be read back. Kept explicit so the UI does not
+   * hardcode the sign and so a future audit-log model can emit -1 here.
+   */
+  delta: 1;
+
   /** Set when this exact order also granted a reward. */
   rewardName: string | null;
 }
 
 export type RecentActivityResult =
-  | { success: true; items: ActivityItem[] }
+  | { success: true; items: ActivityItem[]; crossBranch: boolean }
   | { success: false; error: string };
 
 /**
@@ -84,8 +110,10 @@ export type RecentActivityResult =
  *
  * One query, served by the existing `@@index([branchId, createdAt(sort: Desc)])`
  * on `orders` — the `take` is applied by Postgres, so the row count is bounded
- * regardless of how large the table grows. Customer/staff/reward come along as
- * selected relations rather than N+1 follow-up lookups.
+ * regardless of how large the table grows. The `id` tie-break rides on top of
+ * the indexed `createdAt` ordering and only sorts within an identical
+ * timestamp, so it does not cost the index scan. Customer/staff/branch/reward
+ * come along as selected relations rather than N+1 follow-up lookups.
  */
 export async function getRecentActivity(): Promise<RecentActivityResult> {
   const scope = await resolveScope();
@@ -94,7 +122,10 @@ export async function getRecentActivity(): Promise<RecentActivityResult> {
   try {
     const orders = await prisma.order.findMany({
       where: scope.orderWhere,
-      orderBy: { createdAt: "desc" },
+      // Strictly newest-first. `id` is a secondary key only to break ties:
+      // two cashiers stamping inside the same millisecond would otherwise get
+      // an unstable order, which makes rows visibly swap places between polls.
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: ACTIVITY_LIMIT,
       select: {
         id: true,
@@ -102,13 +133,17 @@ export async function getRecentActivity(): Promise<RecentActivityResult> {
         customer: {
           select: { id: true, name: true, phone: true, qrUuid: true },
         },
+        // The staff member who performed the stamp — NOT the customer. These
+        // are two different people and the UI must never conflate them.
         staff: { select: { name: true } },
+        branch: { select: { name: true } },
         reward: { select: { rule: { select: { rewardName: true } } } },
       },
     });
 
     return {
       success: true,
+      crossBranch: scope.crossBranch,
       items: orders.map((order) => ({
         id: order.id,
         createdAt: order.createdAt.toISOString(),
@@ -117,6 +152,8 @@ export async function getRecentActivity(): Promise<RecentActivityResult> {
         customerPhone: order.customer.phone,
         customerQrUuid: order.customer.qrUuid,
         staffName: order.staff?.name ?? null,
+        branchName: order.branch?.name ?? null,
+        delta: 1 as const,
         rewardName: order.reward?.rule.rewardName ?? null,
       })),
     };

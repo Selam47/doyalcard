@@ -66,7 +66,19 @@ export default async function StaffCustomerPage({ params }: Props) {
         </span>
       </div>
 
-      {/* Actions first — this is a till, the cashier taps before reading. */}
+      {/*
+        Status first, actions second. The cashier confirms WHOSE card this is
+        and where the cycle stands before any mutating button is in reach —
+        which also keeps the destructive "Tehlikeli Bölge" (rendered at the
+        foot of StaffActionPanel) at the very bottom of the whole view.
+      */}
+      <CustomerCardView
+        customer={customer}
+        qrDataUrl={qrDataUrl}
+        activeRules={activeRules}
+        maxStamps={maxStamps}
+      />
+
       <StaffActionPanel
         customer={{
           id: customer.id,
@@ -85,14 +97,6 @@ export default async function StaffCustomerPage({ params }: Props) {
         maxStamps={maxStamps}
         // Visibility only — deleteCustomer re-checks ADMIN against the DB.
         isAdmin={staff.isAdmin}
-      />
-
-      {/* Same read-only card the customer sees, for confirmation at the counter. */}
-      <CustomerCardView
-        customer={customer}
-        qrDataUrl={qrDataUrl}
-        activeRules={activeRules}
-        maxStamps={maxStamps}
       />
     </div>
   );

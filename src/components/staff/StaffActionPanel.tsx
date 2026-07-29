@@ -122,21 +122,25 @@ export function StaffActionPanel({
       </div>
 
       <div className="p-6 space-y-5">
-        {/* Customer stats */}
-        <div className="grid grid-cols-2 gap-3">
-          <div className="bg-green-50 rounded-xl p-4 text-center">
-            <div className="text-3xl font-extrabold text-green-700">
-              {cycleCount}
-              <span className="text-lg text-green-400">/{maxStamps}</span>
-            </div>
-            <div className="text-xs text-gray-500 mt-1">Mevcut Döngü</div>
-          </div>
-          <div className="bg-blue-50 rounded-xl p-4 text-center">
-            <div className="text-3xl font-extrabold text-blue-700">
+        {/*
+          Compact status line only. The full "Mevcut Döngü / Toplam Sipariş"
+          summary is rendered by CustomerCardView directly above this panel —
+          repeating the big stat tiles here would just push the buttons off a
+          phone screen. cycleCount is still needed for the -1 disable rule.
+        */}
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-gray-500">
+            Mevcut Döngü{" "}
+            <span className="font-bold text-green-700">
+              {cycleCount}/{maxStamps}
+            </span>
+          </span>
+          <span className="text-gray-500">
+            Toplam{" "}
+            <span className="font-bold text-blue-700">
               {customer.lifetimeCount}
-            </div>
-            <div className="text-xs text-gray-500 mt-1">Toplam Sipariş</div>
-          </div>
+            </span>
+          </span>
         </div>
 
         {/* Add order button */}

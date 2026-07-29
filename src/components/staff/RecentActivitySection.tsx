@@ -13,13 +13,31 @@ const POLL_MS = 20_000;
 /** How often the "x dakika önce" labels re-render between fetches. */
 const TICK_MS = 15_000;
 
-function displayName(item: ActivityItem): string {
+/** Primary line: WHO the stamp belongs to. Falls back to a masked phone. */
+function customerLabel(item: ActivityItem): string {
   const name = item.customerName.trim();
   return name.length > 0 ? name : maskPhone(item.customerPhone);
 }
 
+/**
+ * Secondary line: WHO performed the stamp, and (for the cross-branch admin
+ * view only) where. Explicitly prefixed so the two names on a row can never be
+ * misread as "customer, then something about the customer".
+ */
+function actorLabel(item: ActivityItem, crossBranch: boolean): string {
+  const staff = item.staffName?.trim();
+  const parts = [`İşlemi yapan: ${staff && staff.length > 0 ? staff : "Silinmiş personel"}`];
+
+  if (crossBranch) {
+    parts.push(item.branchName?.trim() || "Şube atanmamış");
+  }
+
+  return parts.join(" · ");
+}
+
 export function RecentActivitySection() {
   const [items, setItems] = useState<ActivityItem[] | null>(null);
+  const [crossBranch, setCrossBranch] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // `now` lives in state rather than being read during render: Date.now() in a
@@ -33,6 +51,7 @@ export function RecentActivitySection() {
       const result = await getRecentActivity();
       if (result.success) {
         setItems(result.items);
+        setCrossBranch(result.crossBranch);
         setError(null);
       } else {
         setError(result.error);
@@ -72,12 +91,23 @@ export function RecentActivitySection() {
     }, TICK_MS);
 
     document.addEventListener("visibilitychange", refresh);
+    // Coming back from the till (/staff/customer/[uuid]) in the same tab does
+    // not fire visibilitychange, and neither does alt-tabbing back to an
+    // already-visible tab. `focus` catches both, so a stamp taken seconds ago
+    // shows up the moment the cashier looks at this list again rather than at
+    // the next poll tick.
+    window.addEventListener("focus", refresh);
+    // Restoring from the bfcache (browser back after stamping) replays neither
+    // of the above; pageshow is the only event that fires on that path.
+    window.addEventListener("pageshow", refresh);
 
     return () => {
       cancelled = true;
       window.clearInterval(pollId);
       window.clearInterval(tickId);
       document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("pageshow", refresh);
     };
   }, [load]);
 
@@ -89,8 +119,10 @@ export function RecentActivitySection() {
         <h2 className="text-white font-semibold flex items-center gap-2">
           <span className="text-lg">🧾</span> Son İşlemler
         </h2>
-        <p className="text-slate-300 text-xs mt-0.5">
-          Şubenizdeki son damga hareketleri
+        <p className="text-slate-300 text-xs mt-0.5 leading-normal">
+          {crossBranch
+            ? "Tüm şubelerdeki son damga hareketleri"
+            : "Şubenizdeki son damga hareketleri"}
         </p>
       </div>
 
@@ -129,30 +161,38 @@ export function RecentActivitySection() {
               <li key={item.id}>
                 <Link
                   href={`/staff/customer/${item.customerQrUuid}`}
-                  className="flex items-center gap-3 py-2.5 -mx-2 px-2 rounded-lg hover:bg-gray-50 transition-colors"
+                  className="flex items-center gap-3 py-3 -mx-2 px-2 rounded-lg hover:bg-gray-50 transition-colors"
                 >
+                  {/* Stamp delta badge. `delta` is always +1 today because a
+                      correction deletes its Order row rather than writing a
+                      negative one — see ActivityItem.delta. */}
                   <span
-                    className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm ${
+                    className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-semibold leading-none ${
                       item.rewardName
                         ? "bg-amber-100 text-amber-700"
                         : "bg-green-100 text-green-700"
                     }`}
                     aria-hidden="true"
                   >
-                    {item.rewardName ? "🎁" : "+1"}
+                    {item.rewardName ? "🎁" : `+${item.delta}`}
                   </span>
 
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium text-gray-800 truncate">
-                      {displayName(item)}
+                  {/*
+                    Explicit column + gap + leading on BOTH lines. The two <p>
+                    elements previously relied on the line-height that ships
+                    with `text-sm`/`text-xs`; any inherited or reset
+                    line-height collapsed them onto each other. Pinning
+                    `leading-tight`/`leading-normal` and spacing with `gap-0.5`
+                    makes the row height independent of inherited typography.
+                  */}
+                  <div className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
+                    <p className="truncate text-sm font-medium leading-tight text-gray-800">
+                      {customerLabel(item)}
                     </p>
-                    <p className="text-xs text-gray-500 truncate">
-                      {item.staffName ?? "Silinmiş personel"}
+                    <p className="truncate text-xs leading-normal text-gray-500">
+                      {actorLabel(item, crossBranch)}
                       {item.rewardName && (
-                        <span className="text-amber-600">
-                          {" "}
-                          · {item.rewardName}
-                        </span>
+                        <span className="text-amber-600"> · {item.rewardName}</span>
                       )}
                     </p>
                   </div>
@@ -160,7 +200,7 @@ export function RecentActivitySection() {
                   <time
                     dateTime={item.createdAt}
                     title={formatClockTime(item.createdAt)}
-                    className="shrink-0 text-xs text-gray-400 tabular-nums"
+                    className="shrink-0 self-center text-xs leading-tight text-gray-400 tabular-nums"
                   >
                     {now === null ? "" : formatRelativeTime(item.createdAt, now)}
                   </time>

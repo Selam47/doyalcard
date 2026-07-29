@@ -8,12 +8,18 @@
 // That is the point: "+1 Sipariş", "-1 Damga" and "Müşteriyi Sil" live on
 // /staff/customer/[uuid], behind the middleware-protected /staff prefix.
 //
+// It also renders NO navigation toward the staff terminal — not even for an
+// authenticated ADMIN. A raw QR scan from a native camera app lands here and
+// must be a dead end for everyone, so there is deliberately no link, no
+// redirect and no role-conditional branch pointing at /staff/*. Staff reach
+// the till by signing into the staff portal and using the in-app scanner
+// (/staff), which rewrites the decoded URL to /staff/customer/<uuid> itself.
+//
 // Read access itself is gated too — see src/lib/card-access.ts. A card is
 // KVKK personal data, so knowing the UUID is not enough: the viewer must be
 // the customer who owns it, or active staff.
 import type { Metadata } from "next";
 
-import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { resolveCardAccess } from "@/lib/card-access";
 import { CustomerCardView } from "@/components/stamp-card/CustomerCardView";
@@ -57,7 +63,9 @@ export default async function CardPage({ params }: Props) {
 
   if (access.status === "not-found") notFound();
 
-  const { customer, staff } = access;
+  // Only the customer row is read out. The viewer's staff principal is
+  // intentionally discarded here: nothing on this page may vary by role.
+  const { customer } = access;
 
   const [qrDataUrl, campaign] = await Promise.all([
     generateQrDataUrl(uuid),
@@ -92,19 +100,11 @@ export default async function CardPage({ params }: Props) {
         />
 
         {/*
-          Staff get a LINK to the till, never the controls themselves. The
-          destination re-authorizes on its own, so this link grants nothing —
-          it is a shortcut, not a permission.
+          NOTHING follows the card. Do not add a staff shortcut here — not
+          behind a role check, not behind a feature flag. This page is the
+          landing spot for a raw camera scan, and it stays a read-only dead end
+          for every viewer.
         */}
-        {staff && (
-          <Link
-            href={`/staff/customer/${uuid}`}
-            className="flex items-center justify-center gap-2 w-full py-3 rounded-2xl bg-amber-500/90 hover:bg-amber-400 text-amber-950 font-semibold text-sm transition-colors"
-          >
-            <span>⚡</span>
-            Personel İşlem Paneline Git
-          </Link>
-        )}
       </main>
     </div>
   );

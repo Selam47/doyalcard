@@ -38,10 +38,11 @@ Two distinct routes render a stamp card. Never merge them.
 
 | Route | Who may open it | What it renders |
 | --- | --- | --- |
-| `/card/[uuid]` | The card's own customer (customer cookie must match) **or** active staff | Read-only card. **Zero** action buttons — the file does not import `StaffActionPanel`, `DeleteCustomerButton` or any mutation. |
+| `/card/[uuid]` | The card's own customer (customer cookie must match) **or** active staff | Read-only card. **Zero** action buttons and **zero** links to `/staff/*` — the file does not import `StaffActionPanel`, `DeleteCustomerButton` or any mutation, and renders nothing that varies by role. |
 | `/staff/customer/[uuid]` | Active `STAFF` / `ADMIN` only | Read-only card **plus** the staff action panel (`+1 Sipariş`, `-1 Damga`, `Müşteriyi Sil`). |
 
-- The public `/card/[uuid]` route MUST NOT gain an action button, ever. A role check that decides whether to render controls is one bug away from rendering them; the guarantee here is structural — the controls are not reachable from that module at all.
+- The public `/card/[uuid]` route MUST NOT gain an action button **or a link to the staff terminal**, ever — not behind a role check, not for an `ADMIN`. A role check that decides whether to render controls or navigation is one bug away from rendering them; the guarantee here is structural — the page discards the staff principal entirely (`const { customer } = access`) and nothing it renders varies by viewer. `/card/[uuid]` is where a raw native-camera scan lands, and it is a read-only dead end for every device.
+- Staff reach the till by signing into the staff portal and scanning with the **in-app scanner** (`src/components/staff/QrScannerSection.tsx`), which decodes `/card/<uuid>` and routes to `/staff/customer/<uuid>` itself. That is the only navigation path into the action surface.
 - Anonymous visitors are rejected **before** the customer row is fetched, so the route cannot be used to probe which UUIDs exist. Read authorization lives in `src/lib/card-access.ts` (`resolveCardAccess` / `resolveStaffCardAccess`), which is a plain `server-only` module — deliberately NOT `"use server"`, because every export of a `"use server"` file is a publicly callable endpoint.
 - The customer's QR still encodes `/card/<uuid>` (that is what the customer's own phone opens). The staff scanner rewrites it to `/staff/customer/<uuid>` after decoding.
 
