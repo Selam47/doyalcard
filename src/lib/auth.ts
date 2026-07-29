@@ -1,21 +1,20 @@
 // src/lib/auth.ts
-// Full auth config — used by the /api/auth/[...nextauth] route handler.
-// bcryptjs is Node.js-only, so the /api/auth route must stay on Node runtime.
+// Full auth config — used by the /api/auth/[...nextauth] route handler and by
+// every Server Action / Server Component that calls auth().
+//
+// bcryptjs and the pg-backed Prisma client are Node.js-only, so this module
+// must NEVER be imported from middleware.ts (Edge runtime). Middleware imports
+// the edge-safe half from "@/lib/auth.config" instead — see that file.
 import NextAuth from "next-auth";
-import type { Session, User } from "next-auth";
-import type { JWT } from "next-auth/jwt";
 import Credentials from "next-auth/providers/credentials";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
+import { authConfig } from "@/lib/auth.config";
 
-const authConfig = {
-  // No database adapter: with the Credentials provider + JWT sessions,
-  // NextAuth never persists users/sessions itself, and the schema has no
-  // Account/Session/VerificationToken models for an adapter to use.
-  session: { strategy: "jwt" as const },
-  pages: {
-    signIn: "/login",
-  },
+export const { handlers, signIn, signOut, auth } = NextAuth({
+  // Session strategy, pages and the jwt/session callbacks are shared with
+  // middleware so the token shape can never drift between the two runtimes.
+  ...authConfig,
   providers: [
     Credentials({
       name: "credentials",
@@ -61,27 +60,4 @@ const authConfig = {
       },
     }),
   ],
-  callbacks: {
-    async jwt({ token, user }: { token: JWT; user?: User }) {
-      if (user && user.id) {
-        token.id = user.id;
-        token.role = user.role;
-        token.branchId = user.branchId;
-        token.branchName = user.branchName;
-      }
-      return token;
-    },
-    async session({ session, token }: { session: Session; token: JWT }) {
-      if (token && session.user) {
-        session.user.id = token.id;
-        session.user.role = token.role;
-        session.user.branchId = token.branchId;
-        session.user.branchName = token.branchName;
-      }
-      return session;
-    },
-  },
-};
-
-export const { handlers, signIn, signOut, auth } = NextAuth(authConfig);
-
+});

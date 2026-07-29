@@ -1,24 +1,3 @@
-// src/lib/campaign-rules.ts
-//
-// SINGLE SOURCE OF TRUTH for stamp-card sizing — the PURE, CLIENT-SAFE half.
-//
-// This file must NEVER import `prisma` (or anything else server-only). It is
-// imported directly by client components (e.g. StaffActionPanel.tsx) as well
-// as by server code, so it can only contain plain functions/types with no
-// side effects and no database access.
-//
-// The database-backed lookups (`getActiveCampaignRules`, `getActiveCycleRule`,
-// `getCampaignConfig`) live in `@/lib/campaign-rules.server` instead, guarded
-// by `import "server-only"`. Server components, route handlers, and server
-// actions should import those from `campaign-rules.server`; everything below
-// stays safe to import from either side.
-//
-// Every surface that renders "x / maxStamps" — the customer card
-// (/card/[uuid]), the customer dashboard (/customer/dashboard), the staff
-// action panel and the public landing page — MUST derive its numbers from
-// the active CampaignRule row in the database (via campaign-rules.server),
-// then use the helpers here to compute/display them. Nothing may read a
-// per-customer legacy value or a hardcoded limit.
 
 export interface ActiveCampaignRule {
   id: string;
