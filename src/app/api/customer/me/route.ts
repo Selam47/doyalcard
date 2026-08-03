@@ -1,6 +1,3 @@
-// src/app/api/customer/me/route.ts
-// Returns the authenticated customer's full dashboard data.
-
 import { NextResponse } from "next/server";
 
 import { getCustomerSession } from "@/lib/customer-session";
@@ -9,8 +6,6 @@ import { isDbConnectionError } from "@/lib/db-errors";
 import { clampCycleCount } from "@/lib/campaign-rules";
 import { getCampaignConfig } from "@/lib/campaign-rules.server";
 
-// Reads live campaign_rules + per-customer counters — must never be
-// statically cached.
 export const dynamic = "force-dynamic";
 
 export async function GET() {
@@ -20,8 +15,6 @@ export async function GET() {
   }
 
   try {
-    // The customer row and the campaign config are independent — fetch them
-    // in parallel instead of serially.
     const [customer, campaign] = await Promise.all([
       prisma.customer.findUnique({
       where: { id: session.customerId },
@@ -49,13 +42,9 @@ export async function GET() {
       return NextResponse.json({ error: "Customer not found" }, { status: 404 });
     }
 
-    // Same single source of truth the card UI uses, so an API consumer can
-    // never disagree with what the customer sees on screen.
     const { rules, cycleRule, maxStamps } = campaign;
     const cycleCount = clampCycleCount(customer.currentCycleCount, maxStamps);
 
-    // Next milestone: the lowest active threshold still ahead of the customer;
-    // once every milestone is passed, the cycle rule itself is the target.
     const targetRule =
       rules.find((r) => r.threshold > cycleCount) ?? cycleRule;
 
@@ -66,11 +55,8 @@ export async function GET() {
       qrUuid: customer.qrUuid,
       currentCycleCount: cycleCount,
       lifetimeCount: customer.lifetimeCount,
-      // Authoritative slot count — clients must render "x / maxStamps".
       maxStamps,
       createdAt: customer.createdAt,
-      // No hardcoded fallback: if there are no active campaign rules at all,
-      // there is no meaningful "next threshold" to report.
       nextThreshold: targetRule?.threshold ?? null,
       nextRewardName: targetRule?.rewardName ?? null,
       orders: customer.orders.map((o) => ({

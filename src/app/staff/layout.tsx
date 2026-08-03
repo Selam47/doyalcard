@@ -1,4 +1,3 @@
-// src/app/staff/layout.tsx
 import { auth } from "@/lib/auth";
 import { redirect } from "next/navigation";
 import { StaffNav } from "@/components/staff/StaffNav";

@@ -77,8 +77,6 @@ export async function resolveCardAccess(uuid: string): Promise<CardAccess> {
     getCustomerSession(),
   ]);
 
-  // Reject anonymous callers before any lookup: a 404-vs-redirect difference
-  // would otherwise confirm whether a guessed UUID belongs to a real customer.
   if (!staff && !customerSession) return { status: "unauthenticated" };
 
   let customer: CardCustomer | null;
@@ -91,10 +89,8 @@ export async function resolveCardAccess(uuid: string): Promise<CardAccess> {
 
   if (!customer) return { status: "not-found" };
 
-  // Staff may read any card (they need to at the counter).
   if (staff) return { status: "ok", customer, staff };
 
-  // A customer may read exactly one card: their own.
   if (customerSession?.customerId !== customer.id) {
     return { status: "forbidden" };
   }

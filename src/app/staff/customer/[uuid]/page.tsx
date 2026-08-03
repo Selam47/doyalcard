@@ -38,8 +38,6 @@ export default async function StaffCustomerPage({ params }: Props) {
 
   const access = await resolveStaffCardAccess(uuid);
 
-  // A customer session can never satisfy this route — only an active
-  // STAFF/ADMIN user row does.
   if (access.status === "unauthorized") redirect("/login");
   if (access.status === "not-found") notFound();
 
@@ -95,7 +93,6 @@ export default async function StaffCustomerPage({ params }: Props) {
             createdAt: r.createdAt,
           }))}
         maxStamps={maxStamps}
-        // Visibility only — deleteCustomer re-checks ADMIN against the DB.
         isAdmin={staff.isAdmin}
       />
     </div>

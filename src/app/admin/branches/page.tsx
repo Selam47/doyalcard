@@ -1,4 +1,3 @@
-// src/app/admin/branches/page.tsx
 import type { Metadata } from "next";
 
 import { getBranches } from "@/actions/admin";

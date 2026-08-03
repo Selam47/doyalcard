@@ -1,4 +1,3 @@
-// src/actions/order.ts
 "use server";
 
 import { prisma } from "@/lib/prisma";
@@ -14,12 +13,8 @@ import {
 } from "@/lib/campaign-rules";
 
 const TX_OPTIONS = {
-  maxWait: 5000, // max time to wait for a transaction slot
-  timeout: 10000, // max time for the transaction to complete
-  // Serializable: two cashiers stamping the same card at the same moment
-  // would otherwise both read count N and both write N+1 (lost update).
-  // Under Serializable the losing transaction fails with P2034 and is
-  // surfaced as a clean "please retry" error instead of losing a stamp.
+  maxWait: 5000,
+  timeout: 10000,
   isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
 } as const;
 
@@ -69,22 +64,16 @@ export type AddOrderResult =
  *     one reward can be created per order.)
  */
 export async function addOrder(customerId: string): Promise<AddOrderResult> {
-  // ─── 1. Authentication & Authorization ─────────────────────────────────────
-  // Re-verified from the DATABASE on every call, not from the JWT: a Server
-  // Action is a publicly callable endpoint, and a deactivated cashier's token
-  // stays cryptographically valid until it expires.
   const guard = await authorizeStaff();
   if (!guard.ok) return { success: false, error: guard.error };
   const { staff } = guard;
 
-  // ─── 2. Input Validation ───────────────────────────────────────────────────
   if (!customerId || typeof customerId !== "string") {
     return { success: false, error: "Geçersiz müşteri kimliği" };
   }
 
   try {
     const result = await prisma.$transaction(async (tx) => {
-      // ─── 3. Verify Customer Exists ───────────────────────────────────────
       const customer = await tx.customer.findUnique({
         where: { id: customerId },
         select: {
@@ -97,7 +86,6 @@ export async function addOrder(customerId: string): Promise<AddOrderResult> {
 
       if (!customer) throw new Error("CUSTOMER_NOT_FOUND");
 
-      // ─── 4. Resolve maxStamps From The ACTIVE Campaign Rule ──────────────
       const activeRules: ActiveCampaignRule[] = await tx.campaignRule.findMany({
         where: { isActive: true },
         orderBy: { threshold: "asc" },
@@ -107,9 +95,6 @@ export async function addOrder(customerId: string): Promise<AddOrderResult> {
       const cycleRule = pickCycleRule(activeRules);
       const maxStamps = resolveMaxStamps(cycleRule);
 
-      // ─── 5. Compute New Counts ───────────────────────────────────────────
-      // Normalize a stranded legacy value first so the increment lands inside
-      // the currently active cycle instead of drifting further out of range.
       const baseCycleCount = Math.min(
         Math.max(0, customer.currentCycleCount),
         maxStamps
@@ -117,10 +102,6 @@ export async function addOrder(customerId: string): Promise<AddOrderResult> {
       const nextCycleCount = baseCycleCount + 1;
       const nextLifetimeCount = Math.max(0, customer.lifetimeCount) + 1;
 
-      // ─── 6. Cycle Completion vs. Milestone ───────────────────────────────
-      // A cycle can only complete if an active rule actually exists — a Reward
-      // row requires a ruleId, so with no configured campaign we simply keep
-      // counting rather than resetting silently.
       const cycleCompleted = cycleRule !== null && nextCycleCount >= maxStamps;
 
       const matchedRule = cycleCompleted
@@ -129,7 +110,6 @@ export async function addOrder(customerId: string): Promise<AddOrderResult> {
 
       const finalCycleCount = cycleCompleted ? 0 : nextCycleCount;
 
-      // ─── 7. Create Order Record ──────────────────────────────────────────
       const order = await tx.order.create({
         data: {
           customerId: customer.id,
@@ -138,7 +118,6 @@ export async function addOrder(customerId: string): Promise<AddOrderResult> {
         },
       });
 
-      // ─── 8. Create Reward (If Any Rule Matched) ──────────────────────────
       if (matchedRule) {
         await tx.reward.create({
           data: {
@@ -150,7 +129,6 @@ export async function addOrder(customerId: string): Promise<AddOrderResult> {
         });
       }
 
-      // ─── 9. Update Customer Counters ─────────────────────────────────────
       await tx.customer.update({
         where: { id: customer.id },
         data: {
@@ -167,21 +145,18 @@ export async function addOrder(customerId: string): Promise<AddOrderResult> {
         reward: matchedRule
           ? {
               rewardName: matchedRule.rewardName,
-              // Report the *effective* behaviour: the cycle really did reset.
               isResetPoint: cycleCompleted,
             }
           : undefined,
       };
     }, TX_OPTIONS);
 
-    // ─── 10. Revalidate Every Stamp Surface ────────────────────────────────
     revalidateStampSurfaces(result.qrUuid);
 
     const { qrUuid: _qrUuid, ...payload } = result;
     void _qrUuid;
     return { success: true, ...payload };
   } catch (error) {
-    // ─── 11. Error Handling ────────────────────────────────────────────────
     console.error("[addOrder] Error:", error);
 
     if (error instanceof Error) {
@@ -237,18 +212,15 @@ export type RemoveStampResult =
 export async function removeStamp(
   customerId: string
 ): Promise<RemoveStampResult> {
-  // ─── 1. Authentication & Authorization ─────────────────────────────────────
   const guard = await authorizeStaff();
   if (!guard.ok) return { success: false, error: guard.error };
 
-  // ─── 2. Input Validation ───────────────────────────────────────────────────
   if (!customerId || typeof customerId !== "string") {
     return { success: false, error: "Geçersiz müşteri kimliği" };
   }
 
   try {
     const result = await prisma.$transaction(async (tx) => {
-      // ─── 3. Verify Customer Exists ───────────────────────────────────────
       const customer = await tx.customer.findUnique({
         where: { id: customerId },
         select: {
@@ -261,7 +233,6 @@ export async function removeStamp(
 
       if (!customer) throw new Error("CUSTOMER_NOT_FOUND");
 
-      // ─── 4. Resolve maxStamps From The ACTIVE Campaign Rule ──────────────
       const activeRules: ActiveCampaignRule[] = await tx.campaignRule.findMany({
         where: { isActive: true },
         orderBy: { threshold: "asc" },
@@ -269,12 +240,10 @@ export async function removeStamp(
       });
       const maxStamps = resolveMaxStamps(pickCycleRule(activeRules));
 
-      // ─── 5. Compute New Counts (never below 0) ───────────────────────────
       const baseCycleCount = clampCycleCount(customer.currentCycleCount, maxStamps);
       const newCycleCount = Math.max(0, baseCycleCount - 1);
       const newLifetimeCount = Math.max(0, customer.lifetimeCount - 1);
 
-      // ─── 6. Remove The Latest Reward-Free Order ──────────────────────────
       const lastOrder = await tx.order.findFirst({
         where: { customerId: customer.id, reward: { is: null } },
         orderBy: { createdAt: "desc" },
@@ -285,7 +254,6 @@ export async function removeStamp(
         await tx.order.delete({ where: { id: lastOrder.id } });
       }
 
-      // ─── 7. Update Customer Counters ─────────────────────────────────────
       await tx.customer.update({
         where: { id: customer.id },
         data: {
@@ -302,14 +270,12 @@ export async function removeStamp(
       };
     }, TX_OPTIONS);
 
-    // ─── 8. Revalidate Every Stamp Surface ─────────────────────────────────
     revalidateStampSurfaces(result.qrUuid);
 
     const { qrUuid: _qrUuid, ...payload } = result;
     void _qrUuid;
     return { success: true, ...payload };
   } catch (error) {
-    // ─── 9. Error Handling ─────────────────────────────────────────────────
     console.error("[removeStamp] Error:", error);
 
     if (error instanceof Error && error.message === "CUSTOMER_NOT_FOUND") {

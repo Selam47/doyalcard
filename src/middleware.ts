@@ -1,8 +1,9 @@
 import NextAuth from "next-auth";
 import { NextResponse } from "next/server";
-import type { NextRequest } from "next/server";
+import type { NextFetchEvent, NextRequest } from "next/server";
 
 import { authConfig } from "@/lib/auth.config";
+import { stripSessionCookiePersistence } from "@/lib/session-cookie";
 
 // Edge-safe NextAuth instance: authConfig carries NO provider, NO adapter and
 // NO Prisma/bcrypt import, so this module bundles cleanly for the Edge runtime.
@@ -58,10 +59,15 @@ const STAFF_PREFIXES = ["/staff", "/api/staff", "/api/pos", "/api/cashier"] as c
  *                     cookie session (src/lib/customer-session.ts) and each
  *                     handler verifies it itself. A customer session is not a
  *                     staff session and can never satisfy the checks below.
+ *  • /api/session   — logout-only surface (/api/session/reset). It deletes the
+ *                     CALLER'S OWN cookies and reads nothing, so gating it on a
+ *                     session would be circular: TabSessionGuard has to be able
+ *                     to call it precisely when it does not want a session.
+ *                     Never add a read or a mutation under this prefix.
  *
  * Everything else under /api is staff-gated by default — see apiRequiresStaff().
  */
-const PUBLIC_API_PREFIXES = ["/api/auth", "/api/customer"] as const;
+const PUBLIC_API_PREFIXES = ["/api/auth", "/api/customer", "/api/session"] as const;
 
 /** Segment-aware prefix match: "/admin" matches "/admin/x" but not "/administrator". */
 function isUnder(pathname: string, prefix: string): boolean {
@@ -83,8 +89,6 @@ function apiRequiresStaff(pathname: string): boolean {
   );
 }
 
-// ─── Denial helpers ───────────────────────────────────────────────────────────
-
 /** API callers get JSON; page navigations get a redirect they can recover from. */
 function denyUnauthenticated(request: NextRequest, isApi: boolean) {
   if (isApi) {
@@ -95,7 +99,6 @@ function denyUnauthenticated(request: NextRequest, isApi: boolean) {
   }
 
   const loginUrl = new URL("/login", request.nextUrl);
-  // Preserve where they were headed so login can bounce them back.
   loginUrl.searchParams.set(
     "callbackUrl",
     `${request.nextUrl.pathname}${request.nextUrl.search}`
@@ -118,15 +121,11 @@ function denyForbidden(request: NextRequest, isApi: boolean, fallback: string) {
   return NextResponse.redirect(new URL(fallback, request.nextUrl));
 }
 
-export default auth(function middleware(request) {
+const withAuth = auth(function middleware(request) {
   const { pathname } = request.nextUrl;
 
-  // Statik/public varlıklar: hiçbir auth veya güvenlik kontrolüne sokulmaz.
   if (isPublicAsset(pathname)) {
     const response = NextResponse.next();
-    // Manifest `crossOrigin="use-credentials"` ile isteniyor; kimlik bilgili
-    // isteklerde tarayıcı ACAO olarak wildcard kabul etmez, bu yüzden isteğin
-    // kendi origin'ini yansıtıyoruz.
     const origin = request.headers.get("origin");
     if (origin) {
       response.headers.set("Access-Control-Allow-Origin", origin);
@@ -140,16 +139,12 @@ export default auth(function middleware(request) {
   const role = session?.user?.role;
   const isApi = pathname.startsWith("/api/");
 
-  // ── ADMIN-only ────────────────────────────────────────────────────────────
   if (matchesAny(pathname, ADMIN_PREFIXES)) {
     if (!session?.user) return denyUnauthenticated(request, isApi);
-    // A STAFF user is authenticated but not entitled — send them to /staff,
-    // the same fallback src/app/admin/layout.tsx uses.
     if (role !== "ADMIN") return denyForbidden(request, isApi, "/staff");
     return NextResponse.next();
   }
 
-  // ── STAFF or ADMIN ────────────────────────────────────────────────────────
   if (matchesAny(pathname, STAFF_PREFIXES) || apiRequiresStaff(pathname)) {
     if (!session?.user) return denyUnauthenticated(request, isApi);
     if (role !== "STAFF" && role !== "ADMIN") {
@@ -158,19 +153,33 @@ export default auth(function middleware(request) {
     return NextResponse.next();
   }
 
-  // Everything else (/, /login, /customer/*, /card/*) is intentionally open and
-  // guarded by its own page/handler logic.
   return NextResponse.next();
 });
 
+/**
+ * The Auth.js middleware wrapper re-issues the session cookie as it rotates the
+ * JWT, and it writes that cookie with an `Expires` attribute just like the route
+ * handler does. Without this pass a single navigation through middleware would
+ * quietly turn the session cookie back into a persistent one, undoing the
+ * "close the browser and you are logged out" guarantee. Everything the wrapper
+ * returns therefore goes through the same stripper as /api/auth/*.
+ */
+type MiddlewareFn = (
+  request: NextRequest,
+  event: NextFetchEvent
+) => Promise<Response | undefined> | Response | undefined;
+
+export default async function middleware(
+  request: NextRequest,
+  event: NextFetchEvent
+) {
+  const response = await (withAuth as unknown as MiddlewareFn)(request, event);
+  if (!response) return NextResponse.next();
+  return stripSessionCookiePersistence(response);
+}
+
 export const config = {
   matcher: [
-    /*
-     * Aşağıdakiler HARİÇ tüm yollarda çalışır:
-     * - _next/static, _next/image (build çıktıları)
-     * - manifest.webmanifest, favicon.ico ve diğer public ikon/görseller
-     * - uzantılı tüm statik dosyalar
-     */
     "/((?!_next/static|_next/image|manifest\\.webmanifest|manifest\\.json|favicon\\.ico|robots\\.txt|sitemap\\.xml|sw\\.js|.*\\.(?:png|jpg|jpeg|gif|svg|webp|avif|ico|woff2?|ttf|otf)$).*)",
   ],
 };

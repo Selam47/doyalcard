@@ -1,4 +1,3 @@
-// src/types/next-auth.d.ts
 import type { Role } from "@/generated/prisma/enums";
 import { DefaultSession } from "next-auth";
 

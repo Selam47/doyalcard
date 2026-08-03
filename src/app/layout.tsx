@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "sonner";
+import { TabSessionGuard } from "@/components/auth/TabSessionGuard";
 
 const inter = Inter({
   subsets: ["latin", "latin-ext"],
@@ -26,11 +27,6 @@ export const metadata: Metadata = {
   ],
   authors: [{ name: "Ekrem Coşkun Döner" }],
   creator: "Ekrem Coşkun Döner",
-  // NOT: `manifest` alanı bilerek Metadata'dan çıkarıldı.
-  // Next.js Metadata API'si manifest link'ine `crossOrigin` eklemeye izin vermiyor
-  // (yalnızca VERCEL_ENV === "preview" iken otomatik olarak "use-credentials" ekliyor).
-  // Vercel Deployment Protection / auth yönlendirmeleri altında manifest isteğinin
-  // cookie'lerle gitmesi gerektiği için link etiketini <head> içinde elle basıyoruz.
   icons: {
     icon: [
       { url: "/favicon.ico", sizes: "any" },
@@ -81,9 +77,16 @@ export default function RootLayout({
         />
       </head>
       <body className={`${inter.variable} font-sans antialiased`}>
-        <div className="relative min-h-screen flex flex-col">
-          {children}
-        </div>
+        {/*
+          Kök layout'ta duruyor ki sekme kontrolü sekme başına TEK sefer çalışsın
+          (client-side gezinmelerde bu ağaç yeniden mount edilmez). Korumalı
+          yolları kendi içinde tanır ve sadece onlarda içeriği bekletir.
+        */}
+        <TabSessionGuard>
+          <div className="relative min-h-screen flex flex-col">
+            {children}
+          </div>
+        </TabSessionGuard>
         <Toaster richColors position="top-right" />
       </body>
     </html>

@@ -1,12 +1,6 @@
-// src/components/stamp-card/StampGrid.tsx
 import { cn } from "@/lib/utils";
 import { clampCycleCount, type ActiveCampaignRule } from "@/lib/campaign-rules";
 
-// Milestone styling is generated from the active CampaignRule rows
-// (threshold + rewardName + isResetPoint). There is NO hardcoded stamp count
-// and no fallback here — `maxStamps` is resolved once, server-side, by
-// getCampaignConfig() and passed down, so every card in the system renders
-// the exact same number of slots.
 const RESET_STYLE = { color: "bg-amber-400 ring-amber-500", emoji: "🫓" };
 const MILESTONE_PALETTE: { color: string; emoji: string }[] = [
   { color: "bg-green-400 ring-green-500", emoji: "🥛" },
@@ -37,8 +31,6 @@ function buildMilestones(
   let paletteIndex = 0;
 
   for (const rule of rules) {
-    // A rule whose threshold sits outside the active cycle has no slot to
-    // render into — skip it instead of drawing a phantom stamp.
     if (rule.threshold < 1 || rule.threshold > maxStamps) continue;
 
     if (rule.isResetPoint || rule.threshold === maxStamps) {
@@ -65,8 +57,6 @@ function gridColumnsClass(maxStamps: number): string {
 
 export function StampGrid({ currentCount, activeRules, maxStamps }: Props) {
   const milestones = buildMilestones(activeRules, maxStamps);
-  // Legacy rows may hold a count above the active threshold; never paint more
-  // stamps than the grid has. addOrder/removeStamp heal the stored value.
   const filledCount = clampCycleCount(currentCount, maxStamps);
   const legendRules = activeRules.filter(
     (r) => r.threshold >= 1 && r.threshold <= maxStamps

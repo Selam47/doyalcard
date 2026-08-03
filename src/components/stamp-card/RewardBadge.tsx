@@ -1,4 +1,3 @@
-// src/components/stamp-card/RewardBadge.tsx
 import { formatDate } from "@/lib/utils";
 
 interface Reward {

@@ -1,6 +1,3 @@
-// prisma/seed.ts
-// Run via `prisma db seed` (tsx) — a plain script, so tsconfig path aliases
-// are not available: import the generated client by relative path.
 import path from "node:path";
 import fs from "node:fs";
 import dotenv from "dotenv";
@@ -9,12 +6,6 @@ import { PrismaClient, Role } from "../src/generated/prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import bcrypt from "bcryptjs";
 
-// ─── 0. Environment ─────────────────────────────────────────────────────────
-// `prisma db seed` spawns this file in a FRESH node process: the dotenv call
-// inside prisma.config.ts does not reach us, and Prisma 7 no longer auto-loads
-// .env. So load it here explicitly. Order matters — the first file to define a
-// key wins (dotenv never overwrites an already-set value), and a real shell
-// env var beats both.
 const projectRoot = path.resolve(__dirname, "..");
 const envFiles = [".env.local", ".env"];
 const loadedEnvFiles: string[] = [];
@@ -41,7 +32,6 @@ function fail(title: string, details: string[], error?: unknown): never {
       console.error("\n──────── Stack trace ────────");
       console.error(error.stack);
     }
-    // pg/Prisma hataları asıl sebebi çoğu zaman `cause` içinde taşır.
     const cause = (error as { cause?: unknown })?.cause;
     if (cause) {
       console.error("\n──────── cause ────────");
@@ -52,9 +42,6 @@ function fail(title: string, details: string[], error?: unknown): never {
   process.exit(1);
 }
 
-// Seed her zaman DIRECT (havuzlanmamış) bağlantıyı tercih eder: PgBouncer'ın
-// transaction pooling modu uzun süreli seed işlemleri ve prepared statement'lar
-// için uygun değil. DATABASE_URL yalnızca yedek olarak kullanılır.
 const connectionString = process.env.DIRECT_URL ?? process.env.DATABASE_URL;
 const usingFallback = !process.env.DIRECT_URL && !!process.env.DATABASE_URL;
 
@@ -79,8 +66,6 @@ if (usingFallback) {
   );
 }
 
-// Bağlantı stringini erkenden doğrula: hatalı format hâlinde pg'nin anlamsız
-// "client password must be a string" gibi hatalarını görmek yerine net mesaj ver.
 let dbHost = "(bilinmiyor)";
 try {
   const parsed = new URL(connectionString);
@@ -101,23 +86,13 @@ console.log(
     (loadedEnvFiles.length ? ` [env: ${loadedEnvFiles.join(", ")}]` : "")
 );
 
-// Prisma 7'de datasource bloğunda `url` yok, bu yüzden bare `new PrismaClient()`
-// çalışmaz — driver adapter zorunlu. Runtime'daki singleton (src/lib/prisma.ts)
-// yerine seed'e özel, tek kullanımlık küçük bir pool açıyoruz: `server-only`
-// importunu tetiklemez ve iş bitince temiz şekilde kapanır.
-// max: 1 KULLANMA — Prisma bir upsert'ü kendi transaction'ı içinde çalıştırıp
-// aynı anda ikinci bir bağlantı istediğinde havuz tükenir ve script sessizce
-// kilitlenir. Küçük ama >1 bir havuz + timeout'lar güvenli taraf.
 const pool = new Pool({
   connectionString,
   max: 5,
   connectionTimeoutMillis: 15_000,
   idleTimeoutMillis: 10_000,
-  // Sessizce kopan TCP bağlantılarında script'in sonsuza kadar beklemesini
-  // engeller (NAT/firewall arkasında Neon'a bağlanırken sık görülür).
   keepAlive: true,
   keepAliveInitialDelayMillis: 5_000,
-  // Neon compute uyanırken tek bir sorgu sonsuza kadar asılı kalmasın.
   statement_timeout: 30_000,
   query_timeout: 30_000,
 });
@@ -160,7 +135,6 @@ async function main() {
   await assertConnection();
   console.log("🌱 Starting seed...");
 
-  // ─── 1. Branch ──────────────────────────────────────────────────────────────
   const branch = await prisma.branch.upsert({
     where: { id: "branch-main-001" },
     update: {},
@@ -172,7 +146,6 @@ async function main() {
   });
   console.log(`✅ Branch created: ${branch.name}`);
 
-  // ─── 2. Admin User ──────────────────────────────────────────────────────────
   const adminHash = await bcrypt.hash("Admin1234!", 12);
   const admin = await prisma.user.upsert({
     where: { email: "admin@ekremdoner.com" },
@@ -188,7 +161,6 @@ async function main() {
   });
   console.log(`✅ Admin created: ${admin.email}`);
 
-  // ─── 3. Campaign Rules (3 default rules) ────────────────────────────────────
   const rules = [
     {
       id: "rule-001",
@@ -247,14 +219,12 @@ main()
       console.error(e.stack ?? "(stack yok)");
     }
 
-    // Prisma hataları: hangi kural/hangi alan patladı bilgisi burada.
     const meta = (e as { code?: string; meta?: unknown }) ?? {};
     if (meta.code) console.error(`\nPrisma/PG hata kodu: ${meta.code}`);
     if (meta.meta) {
       console.error("meta:", JSON.stringify(meta.meta, null, 2));
     }
 
-    // Asıl sebep genellikle zincirin en altındadır.
     let cause: unknown = (e as { cause?: unknown })?.cause;
     let depth = 0;
     while (cause && depth < 5) {

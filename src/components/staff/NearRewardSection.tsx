@@ -33,8 +33,6 @@ export function NearRewardSection() {
         setError(null);
       } else {
         setError(result.error);
-        // Distinguish "never loaded" from "reload failed" — an empty list is a
-        // meaningful answer, a null one is not.
         setCustomers((prev) => prev ?? []);
       }
     } catch (err) {
@@ -52,11 +50,6 @@ export function NearRewardSection() {
       if (!cancelled) void load();
     };
 
-    // Deferred to a microtask rather than called straight from the effect
-    // body: `load()` resolves its first `setState` eagerly enough that the
-    // React Compiler's `react-hooks/set-state-in-effect` rule treats it as a
-    // synchronous set, which would cascade an extra render pass. Queuing it
-    // moves the state write past the effect's own commit.
     queueMicrotask(() => {
       if (!cancelled) void load();
     });

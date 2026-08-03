@@ -55,28 +55,23 @@
   --card-foreground: oklch(0.145 0 0);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.145 0 0);
-  
-  /* Green theme for Ekrem Coşkun Döner branding */
-  --primary: oklch(0.55 0.15 145); /* Green-600 */
+
+  --primary: oklch(0.55 0.15 145);
   --primary-foreground: oklch(0.985 0 0);
-  
+
   --secondary: oklch(0.97 0 0);
   --secondary-foreground: oklch(0.205 0 0);
   --muted: oklch(0.97 0 0);
   --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.95 0.05 145); /* Light green accent */
+  --accent: oklch(0.95 0.05 145);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
-  --ring: oklch(0.55 0.15 145); /* Green ring */
-  /* Chart series. 1 is the brand green; 2 and 3 are complementary hues held at
-     a similar lightness/chroma so no series visually outranks another. The
-     shipped defaults were all neutral greys — unusable for a multi-series
-     chart. 4/5 stay neutral for secondary marks. */
-  --chart-1: oklch(0.55 0.15 145); /* brand green  — siparişler */
-  --chart-2: oklch(0.6 0.15 250); /* blue         — kayıtlar   */
-  --chart-3: oklch(0.72 0.15 70); /* amber        — ödüller    */
+  --ring: oklch(0.55 0.15 145);
+  --chart-1: oklch(0.55 0.15 145);
+  --chart-2: oklch(0.6 0.15 250);
+  --chart-3: oklch(0.72 0.15 70);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
   --radius: 0.625rem;
@@ -109,7 +104,6 @@
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
-  /* Same three hues, lifted for contrast against the dark surface. */
   --chart-1: oklch(0.7 0.15 145);
   --chart-2: oklch(0.7 0.14 250);
   --chart-3: oklch(0.8 0.14 70);

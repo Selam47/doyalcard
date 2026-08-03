@@ -1,9 +1,5 @@
 "use client";
 
-// src/components/customer/CustomerPageShell.tsx
-// Thin wrapper rendered around CustomerCardView for logged-in customers.
-// Provides the sticky header + logout button; keeps CustomerCardView itself pure.
-
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";

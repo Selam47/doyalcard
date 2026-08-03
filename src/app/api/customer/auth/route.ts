@@ -15,9 +15,6 @@ import { setCustomerSession } from "@/lib/customer-session";
 import { isValidE164, sanitizePhoneInput } from "@/lib/phone";
 import { isDbConnectionError } from "@/lib/db-errors";
 
-// Google's public signing keys for Firebase ID tokens. Module-level so the
-// key set (and jose's internal cache of it) survives across invocations of
-// a warm serverless function.
 const FIREBASE_JWKS = createRemoteJWKSet(
   new URL(
     "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com"
@@ -44,7 +41,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 
-  // ── Verify the Firebase ID token (signature + issuer + audience) ──────────
   let phoneClaim: string;
   try {
     const { payload } = await jwtVerify(idToken, FIREBASE_JWKS, {
@@ -61,8 +57,6 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Firebase already emits E.164, but normalise defensively so the database
-  // key can never drift from the canonical form the rest of the app uses.
   const normalised = sanitizePhoneInput(phoneClaim);
   if (!isValidE164(normalised)) {
     return NextResponse.json(
@@ -72,7 +66,6 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    // Find or create the customer
     let isNew = false;
     let customer = await prisma.customer.findUnique({
       where: { phone: normalised },
@@ -82,24 +75,19 @@ export async function POST(req: NextRequest) {
       isNew = true;
       customer = await prisma.customer.create({
         data: {
-          name: "Müşteri", // placeholder — staff can update via admin panel
+          name: "Müşteri",
           phone: normalised,
           kvkkConsent: false,
         },
       });
     }
 
-    // Set the HTTP-only session cookie
     await setCustomerSession(customer.id, customer.phone);
 
     return NextResponse.json({ ok: true, isNew });
   } catch (err) {
     console.error("[customer/auth]", err);
 
-    // Neon compute can be scaled to zero between requests; the first query
-    // after an idle period pays a "cold start" reconnect cost and can time
-    // out. Surface that distinctly so the client can retry instead of
-    // treating it as a hard failure.
     if (isDbConnectionError(err)) {
       return NextResponse.json(
         { error: "Veritabanı bağlantısı zaman aşımına uğradı. Lütfen tekrar deneyin." },

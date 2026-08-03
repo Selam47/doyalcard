@@ -1,4 +1,3 @@
-// src/components/staff/DeletedCustomerToast.tsx
 "use client";
 
 import { useEffect, useRef } from "react";
@@ -28,11 +27,6 @@ export function DeletedCustomerToast({ customerName }: Props) {
 
     let cancelled = false;
 
-    // Both calls write state synchronously — `toast.success` pushes into
-    // Sonner's external store and `router.replace` kicks off a navigation.
-    // Running them straight from the effect body is what
-    // `react-hooks/set-state-in-effect` flags, so they are queued past the
-    // effect's own commit.
     queueMicrotask(() => {
       if (cancelled) return;
 

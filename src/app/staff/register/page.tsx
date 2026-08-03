@@ -1,4 +1,3 @@
-// src/app/staff/register/page.tsx
 import type { Metadata } from "next";
 import { RegisterForm } from "@/components/staff/RegisterForm";
 

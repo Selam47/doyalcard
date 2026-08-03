@@ -40,10 +40,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { monthIndex, SYSTEM_START_INDEX } from "@/lib/analytics-range";
 import { cn } from "@/lib/utils";
 
-// Hard-coded rather than Intl.DateTimeFormat: the labels render during SSR of
-// this Client Component as well, and a Node build without full ICU would emit
-// English month names on the server and Turkish ones in the browser —
-// a hydration mismatch. The locale here is fixed Turkish anyway.
 const MONTHS_LONG = [
   "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
   "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık",
@@ -63,11 +59,6 @@ const nf = new Intl.NumberFormat("tr-TR");
  */
 const MAX_SELECTABLE_MONTHS = 24;
 
-// Brand-aligned, CVD-validated categorical triad (light/dark pairs — see
-// dataviz palette check): warm red/orange for orders, emerald for new
-// registrations, amber/gold for rewards. Defined as CSS custom properties on
-// the section root (below) rather than the shared --chart-* tokens so this
-// dashboard's palette can't drift when those tokens change elsewhere.
 const SERIES = {
   registrations: { label: "Kayıt", color: "var(--chart-registrations)", icon: Users },
   orders: { label: "Sipariş", color: "var(--chart-orders)", icon: ShoppingBag },
@@ -87,12 +78,6 @@ export function MonthlyAnalytics({ currentYear, currentMonth, branches }: Props)
   const [month, setMonth] = useState(currentMonth);
   const [branchId, setBranchId] = useState("");
 
-  // The fetched result carries the filter combination it belongs to, so
-  // "still loading" is *derived* (`stored key !== requested key`) rather than
-  // a second state flipped on inside the effect. That keeps the effect body
-  // free of synchronous setState — which would otherwise cascade an extra
-  // render pass on every filter change — and makes a stale response
-  // impossible to display even if it lands late.
   const requestKey = `${year}|${month}|${branchId}`;
   const [fetched, setFetched] = useState<{
     key: string;
@@ -132,10 +117,6 @@ export function MonthlyAnalytics({ currentYear, currentMonth, branches }: Props)
   const data = isLoading ? null : (fetched?.data ?? null);
   const error = isLoading ? null : (fetched?.error ?? null);
 
-  // Absolute month index makes "is the selection in the future / before
-  // launch?" a plain integer comparison instead of nested year/month checks.
-  // Computed via the shared helper so this component can never drift from
-  // the range logic used elsewhere (e.g. the server action).
   const selectedIndex = monthIndex(year, month);
   const currentIndex = monthIndex(currentYear, currentMonth);
   const isAtCurrentMonth = selectedIndex >= currentIndex;
@@ -143,17 +124,12 @@ export function MonthlyAnalytics({ currentYear, currentMonth, branches }: Props)
 
   function shiftMonth(delta: number) {
     const next = selectedIndex + delta;
-    // Never allow navigating into the future or before the system's launch
-    // month — there is no data on either side of that window.
     if (next > currentIndex || next < SYSTEM_START_INDEX) return;
     setYear(Math.floor(next / 12));
     setMonth(next % 12);
   }
 
   const monthOptions = useMemo(() => {
-    // Cap the list so it never reaches back past the system's launch month,
-    // even if MAX_SELECTABLE_MONTHS would otherwise allow it (e.g. right
-    // after launch, when fewer than 24 months of history exist at all).
     const monthCount = Math.min(
       MAX_SELECTABLE_MONTHS,
       currentIndex - SYSTEM_START_INDEX + 1
@@ -188,8 +164,6 @@ export function MonthlyAnalytics({ currentYear, currentMonth, branches }: Props)
     <section
       className={cn(
         "space-y-4",
-        // Brand triad — validated for lightness band, chroma floor, CVD
-        // separation and surface contrast in both modes (dataviz skill).
         "[--chart-registrations:#0f9d68] [--chart-orders:#e8622d] [--chart-rewards:#b45309]",
         "dark:[--chart-registrations:#20a877] dark:[--chart-orders:#e0703f] dark:[--chart-rewards:#c47f1e]"
       )}
@@ -450,7 +424,6 @@ export function MonthlyAnalytics({ currentYear, currentMonth, branches }: Props)
   );
 }
 
-// ─── KPI card ─────────────────────────────────────────────────────────────────
 interface KpiCardProps {
   title: string;
   hint: string;
@@ -526,8 +499,6 @@ function KpiCard({ title, hint, kpi, accent, icon: Icon, isLoading }: KpiCardPro
 }
 
 function ChangeBadge({ changePct }: { changePct: number | null }) {
-  // No baseline (previous month was zero, or this is the system's launch
-  // month with no prior month at all) — a percentage would be meaningless.
   if (changePct === null) {
     return (
       <span className="rounded-md bg-muted px-1.5 py-0.5 font-medium text-muted-foreground">
@@ -555,7 +526,6 @@ function ChangeBadge({ changePct }: { changePct: number | null }) {
   );
 }
 
-// ─── Chart chrome ─────────────────────────────────────────────────────────────
 interface TooltipEntry {
   name?: string;
   value?: number;

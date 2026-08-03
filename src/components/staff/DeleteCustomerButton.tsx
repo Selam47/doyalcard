@@ -1,9 +1,5 @@
-// src/components/staff/DeleteCustomerButton.tsx
 "use client";
 
-// Client Component — imports the Server Action only. Prisma (and everything
-// under @/lib/prisma, which is marked `server-only`) must never be pulled in
-// here; all database work happens inside deleteCustomer() on the server.
 import { useState, useTransition } from "react";
 import { toast } from "sonner";
 import { deleteCustomer } from "@/actions/customer";
@@ -53,8 +49,6 @@ export function DeleteCustomerButton({
     startTransition(async () => {
       try {
         const result = await deleteCustomer(customerId);
-        // Reaching this line means the action returned instead of redirecting,
-        // which it only does on failure.
         setOpen(false);
         toast.error(result?.error ?? "Müşteri silinemedi. Lütfen tekrar deneyin.");
       } catch (error) {
@@ -69,8 +63,6 @@ export function DeleteCustomerButton({
   return (
     <AlertDialog
       open={open}
-      // Ignore escape/close attempts while the delete is in flight so the
-      // dialog can't be dismissed mid-transaction.
       onOpenChange={(nextOpen) => {
         if (!isDeleting) setOpen(nextOpen);
       }}

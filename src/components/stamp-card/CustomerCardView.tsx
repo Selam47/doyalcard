@@ -1,4 +1,3 @@
-// src/components/stamp-card/CustomerCardView.tsx
 import { maskPhone, formatDate } from "@/lib/utils";
 import { StampGrid } from "./StampGrid";
 import { RewardBadge } from "./RewardBadge";
@@ -40,7 +39,6 @@ export function CustomerCardView({
 }: Props) {
   const pendingRewards = customer.rewards.filter((r) => r.status === "PENDING");
   const claimedRewards = customer.rewards.filter((r) => r.status === "CLAIMED");
-  // Legacy rows can sit above a since-lowered threshold — clamp for display.
   const cycleCount = clampCycleCount(customer.currentCycleCount, maxStamps);
 
   return (

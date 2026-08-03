@@ -1,15 +1,3 @@
-// src/lib/relative-time.ts
-//
-// Turkish relative timestamps ("5 dakika önce") for the staff panel's activity
-// feed. Pure and client-safe — no `prisma`, no `server-only`, no Date.now()
-// inside the module. The caller passes both instants explicitly, which keeps
-// the calling component's render pure (react-hooks/purity) and lets the feed
-// re-label itself from a single ticking `now` in state.
-//
-// Hand-rolled rather than Intl.RelativeTimeFormat("tr") on purpose: the same
-// reasoning as MonthlyAnalytics' month labels — a Node build without full ICU
-// silently falls back to English, which would disagree with the browser.
-
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
@@ -28,8 +16,6 @@ export function formatRelativeTime(then: string | Date, now: number): string {
   const ts = then instanceof Date ? then.getTime() : new Date(then).getTime();
   if (!Number.isFinite(ts)) return "";
 
-  // A clock skew between the DB server and the browser can put a fresh row a
-  // few seconds into the "future"; clamp instead of rendering "-1 dakika önce".
   const diff = Math.max(0, now - ts);
 
   if (diff < MINUTE) return "az önce";

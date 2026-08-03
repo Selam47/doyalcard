@@ -1,4 +1,3 @@
-// src/app/customer/login/page.tsx
 import type { Metadata } from "next";
 
 import Link from "next/link";
@@ -11,14 +10,6 @@ export const metadata: Metadata = {
 };
 
 export default async function CustomerLoginPage() {
-  // If already logged in, the client form redirects straight to the
-  // dashboard — but only on a fresh visit. We intentionally do NOT redirect
-  // here on the server: a server-side redirect() fires on every render of
-  // this route, including the render triggered by the browser Back button.
-  // That was bouncing logged-in customers straight back to /customer/dashboard
-  // whenever they pressed Back from here, permanently trapping them and
-  // preventing Back from ever reaching "/". See CustomerPhoneLoginForm for
-  // the back/forward-aware client-side redirect.
   const session = await getCustomerSession();
   const alreadyLoggedIn = Boolean(session);
 

@@ -12,8 +12,6 @@ import { prisma } from "@/lib/prisma";
 import { authConfig } from "@/lib/auth.config";
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
-  // Session strategy, pages and the jwt/session callbacks are shared with
-  // middleware so the token shape can never drift between the two runtimes.
   ...authConfig,
   providers: [
     Credentials({
@@ -39,7 +37,6 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
 
         if (!isValid) return null;
 
-        // Best-effort bookkeeping — must never block a successful login.
         try {
           await prisma.user.update({
             where: { id: user.id },

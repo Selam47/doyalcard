@@ -1,9 +1,3 @@
-// src/lib/phone.ts
-// Single source of truth for E.164 phone number handling across the app —
-// Firebase Auth (client), API routes, server actions, and the database all
-// go through these helpers so a customer's phone number is always stored
-// and looked up in exactly one canonical form (e.g. "+905551234567").
-
 /**
  * Loose E.164 sanity check: a leading "+", a non-zero first digit, then
  * 7–14 more digits (matches the ITU E.164 max length of 15 digits total).

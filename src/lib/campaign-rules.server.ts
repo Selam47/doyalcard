@@ -1,17 +1,3 @@
-// src/lib/campaign-rules.server.ts
-//
-// SERVER-ONLY database access for campaign rules. This file (and anything
-// it imports) must never end up in a client bundle — it pulls in `prisma`
-// (and transitively `pg`, which needs Node's `tls`/`net` modules and breaks
-// Webpack's client build with "Module not found: Can't resolve 'tls'").
-//
-// The `server-only` import below makes any accidental client-side import
-// fail loudly at build time instead of silently breaking the bundle.
-//
-// Pure/shared helpers (types, `clampCycleCount`, `pickCycleRule`,
-// `resolveMaxStamps`, etc.) that client components ALSO need live in
-// `@/lib/campaign-rules` (no `prisma` import there). Client components must
-// only ever import from that file, never from this one.
 import "server-only";
 
 import { prisma } from "@/lib/prisma";

@@ -41,8 +41,6 @@ export function BranchManager({ initialBranches }: { initialBranches: Branch[] }
   function handleDelete(id: string, name: string) {
     if (!confirm(`"${name}" şubesini silmek istediğinizden emin misiniz?`)) return;
     startTransition(async () => {
-      // deleteBranch refuses when the branch still has staff/customers —
-      // surface that instead of claiming success unconditionally.
       const r = await deleteBranch(id);
       if (!r?.success) {
         toast.error(r?.error ?? "Şube silinemedi");

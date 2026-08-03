@@ -1,4 +1,3 @@
-// src/lib/qr.ts
 import QRCode from "qrcode";
 
 /**
@@ -19,7 +18,6 @@ function getBaseUrl(): string {
   if (process.env.NEXT_PUBLIC_APP_URL) {
     return process.env.NEXT_PUBLIC_APP_URL;
   }
-  // VERCEL_URL is injected by Vercel at build time (without the protocol)
   if (process.env.VERCEL_URL) {
     return `https://${process.env.VERCEL_URL}`;
   }
@@ -37,7 +35,7 @@ export async function generateQrDataUrl(qrUuid: string): Promise<string> {
     margin: 2,
     width: 300,
     color: {
-      dark: "#1a3a2a",  // deep green
+      dark: "#1a3a2a",
       light: "#ffffff",
     },
   });

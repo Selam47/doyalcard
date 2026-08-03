@@ -4,9 +4,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import Link from "next/link";
 import { getCampaignConfig } from "@/lib/campaign-rules.server";
 
-// The marketing copy below quotes live campaign thresholds/reward names —
-// never statically cache this page, or it could show stale rewards after
-// an admin changes /admin/rules.
 export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
@@ -16,7 +13,6 @@ export default async function HomePage() {
   ]);
   const { rules: activeRules, cycleRule, maxStamps } = campaign;
 
-  // ─── Redirect Authenticated Users ─────────────────────────────────────────
   if (session?.user?.role === "ADMIN") {
     redirect("/admin");
   }
@@ -24,7 +20,6 @@ export default async function HomePage() {
     redirect("/staff");
   }
 
-  // ─── Derive Dynamic Marketing Copy From Active Campaign Rules ─────────────
   const easyEarnCopy = cycleRule
     ? `Her etli ekmek siparişinizde otomatik olarak puan kazanırsınız. ${maxStamps} siparişte ${cycleRule.rewardName} kazanırsınız!`
     : "Her etli ekmek siparişinizde otomatik olarak puan kazanırsınız. Belirli sipariş sayılarında özel ödüller kazanırsınız!";
@@ -35,7 +30,6 @@ export default async function HomePage() {
           .join(", ")} kazanın!`
       : "Sipariş sayınız arttıkça özel ödüller kazanın!";
 
-  // ─── Landing Page for Unauthenticated Users ───────────────────────────────
   return (
     <div className="min-h-screen bg-gradient-to-br from-green-50 via-white to-green-50">
       {/* Hero Section */}

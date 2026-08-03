@@ -15,16 +15,19 @@
 import type { Session, User } from "next-auth";
 import type { JWT } from "next-auth/jwt";
 
+/**
+ * JWT'nin ömrü — cookie'nin değil. Oturum cookie'si artık `Expires` taşımıyor
+ * (bkz. src/lib/session-cookie.ts), yani tarayıcı kapanınca düşüyor ve yeni bir
+ * sekmede TabSessionGuard tarafından siliniyor. Bu değer yalnızca son savunma
+ * hattıdır; varsayılan 30 gün "kalıcı olmayan oturum" politikasıyla çelişiyordu.
+ */
+const SESSION_MAX_AGE = 60 * 60 * 12;
+
 export const authConfig = {
-  // No database adapter: with the Credentials provider + JWT sessions,
-  // NextAuth never persists users/sessions itself, and the schema has no
-  // Account/Session/VerificationToken models for an adapter to use.
-  session: { strategy: "jwt" as const },
+  session: { strategy: "jwt" as const, maxAge: SESSION_MAX_AGE },
   pages: {
     signIn: "/login",
   },
-  // Deliberately empty here. The real Credentials provider is attached in
-  // src/lib/auth.ts, which only ever runs on the Node.js runtime.
   providers: [],
   callbacks: {
     async jwt({ token, user }: { token: JWT; user?: User }) {

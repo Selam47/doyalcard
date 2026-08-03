@@ -23,10 +23,6 @@ function createPrismaClient() {
     );
   }
 
-  // A small pool is enough per serverless function instance — Neon's pooler
-  // (PgBouncer) handles the fan-out to the database itself. Setting an
-  // explicit connectionTimeoutMillis lets us fail fast (and retry/report
-  // clearly) instead of hanging on a cold Neon compute start.
   const pool = new Pool({
     connectionString,
     max: 5,
@@ -35,9 +31,6 @@ function createPrismaClient() {
   });
 
   pool.on("error", (err) => {
-    // Idle clients can emit background errors (e.g. the connection was
-    // reset by Neon after a scale-to-zero). Log instead of crashing the
-    // process — Prisma will open a new connection on the next query.
     console.error("[prisma] Idle Postgres client error:", err);
   });
 
@@ -45,10 +38,6 @@ function createPrismaClient() {
   return new PrismaClient({ adapter });
 }
 
-// ─── Strict global singleton ───────────────────────────────────────────────
-// Prevents opening a new connection pool on every hot-reload in dev, and
-// on every module re-evaluation between invocations of the same warm
-// serverless function in production.
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
 };

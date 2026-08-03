@@ -45,7 +45,6 @@ export function StaffActionPanel({
   isAdmin,
 }: Props) {
   const router = useRouter();
-  // Legacy rows may exceed a since-lowered threshold — clamp for display.
   const cycleCount = clampCycleCount(customer.currentCycleCount, maxStamps);
   const [isPending, startTransition] = useTransition();
   const [isRemoving, startRemoveTransition] = useTransition();

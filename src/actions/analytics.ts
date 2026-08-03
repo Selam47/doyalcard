@@ -1,4 +1,3 @@
-// src/actions/analytics.ts
 "use server";
 
 import { prisma } from "@/lib/prisma";
@@ -9,19 +8,11 @@ import { ISTANBUL_OFFSET_HOURS } from "@/lib/istanbul-time";
 import { monthIndex, SYSTEM_START_INDEX } from "@/lib/analytics-range";
 import { z } from "zod";
 
-// ─── Timezone ─────────────────────────────────────────────────────────────────
-// Prisma maps `DateTime` to Postgres `timestamp(3)` WITHOUT time zone and
-// stores the UTC wall clock. A raw `date_trunc('month', created_at)` would
-// therefore bucket by UTC months, pushing every order taken between 00:00 and
-// 03:00 Istanbul time into the previous day (and, on the 1st, the previous
-// month). Türkiye has been on a fixed UTC+3 since 2016 with no DST, so a plain
-// interval shift is exact — no tz database lookup needed.
 const TZ_OFFSET_HOURS = ISTANBUL_OFFSET_HOURS;
 const TZ_SHIFT = Prisma.raw(`INTERVAL '${TZ_OFFSET_HOURS} hours'`);
 
 /** UTC instant at which the given Istanbul-local month begins. */
 function istanbulMonthStart(year: number, monthIndex: number): Date {
-  // Date.UTC normalises out-of-range months (-1 → December of year-1).
   return new Date(
     Date.UTC(year, monthIndex, 1) - TZ_OFFSET_HOURS * 60 * 60 * 1000
   );
@@ -45,7 +36,6 @@ function monthKey(year: number, monthIndex: number): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
-// ─── Public types ─────────────────────────────────────────────────────────────
 export interface Kpi {
   value: number;
   /**
@@ -94,13 +84,6 @@ export interface BranchOption {
   name: string;
 }
 
-// ─── Auth guard ───────────────────────────────────────────────────────────────
-// Middleware already gates /admin, but a Server Action is a public HTTP
-// endpoint reachable by its action id from anywhere — it re-checks the role
-// itself. Returns a result instead of throwing, per the project's error
-// contract (a thrown action reaches the client as an opaque digest).
-// The role is re-read from the database, not taken from the JWT, so a demoted
-// or deactivated admin loses access to revenue analytics immediately.
 async function ensureAdmin(): Promise<{ ok: true } | { ok: false; error: string }> {
   const staff = await getStaffPrincipal();
 
@@ -121,7 +104,6 @@ async function ensureAdmin(): Promise<{ ok: true } | { ok: false; error: string 
   return { ok: true };
 }
 
-// ─── Input validation ─────────────────────────────────────────────────────────
 /**
  * Upper bound on how many months (including the selected one) the trend chart
  * covers. The window is also floored at the system's launch month, so early on
@@ -132,7 +114,6 @@ const MAX_TREND_MONTHS = 12;
 const AnalyticsInput = z.object({
   year: z.coerce.number().int().min(2000).max(2100),
   month: z.coerce.number().int().min(0).max(11),
-  // "" from an unselected <select> means "all branches".
   branchId: z
     .string()
     .trim()
@@ -142,9 +123,6 @@ const AnalyticsInput = z.object({
 
 export type AnalyticsInput = z.input<typeof AnalyticsInput>;
 
-// ─── Raw row shapes ───────────────────────────────────────────────────────────
-// Every COUNT is cast to ::int in SQL — Postgres' bigint would otherwise
-// arrive as a BigInt, which is not serialisable across the RSC boundary.
 interface MonthlyOrderRow {
   bucket: string;
   orders: number;
@@ -202,8 +180,6 @@ export async function getMonthlyAnalytics(
   }
   const { year, month, branchId } = parsed.data;
 
-  // A Server Action is reachable by its action id from anywhere, so the floor
-  // is enforced here too — not only by the (bounded) month selector in the UI.
   const selectedIndex = monthIndex(year, month);
   if (selectedIndex < SYSTEM_START_INDEX) {
     return {
@@ -212,10 +188,6 @@ export async function getMonthlyAnalytics(
     };
   }
 
-  // Trend window: at most MAX_TREND_MONTHS ending with (and including) the
-  // selected month, but never reaching back past the month the system went
-  // live. The previous month used for the KPI deltas is inside this window
-  // (when it exists at all), so no extra round-trip is needed for it.
   const firstTrendIndex = Math.max(
     selectedIndex - (MAX_TREND_MONTHS - 1),
     SYSTEM_START_INDEX
@@ -226,14 +198,10 @@ export async function getMonthlyAnalytics(
   const monthStart = istanbulMonthStart(year, month);
   const monthEnd = istanbulMonthStart(year, month + 1);
 
-  // `Prisma.empty` keeps the WHERE clause valid when no branch is selected.
   const orderBranch = branchId
     ? Prisma.sql`AND o.branch_id = ${branchId}`
     : Prisma.empty;
 
-  // Customer.branchId is the branch the customer was *registered at*, which is
-  // a different column from Order.branchId (where a stamp was given) — hence a
-  // separate fragment rather than reusing `orderBranch`.
   const customerBranch = branchId
     ? Prisma.sql`AND c.branch_id = ${branchId}`
     : Prisma.empty;
@@ -241,9 +209,6 @@ export async function getMonthlyAnalytics(
   try {
     const [monthlyRegistrations, monthlyOrders, monthlyRewards, dailyOrders, dailyRewards] =
       await Promise.all([
-        // 1 ─ New customer registrations per month, dated by when the customer
-        //     row was created. Raw SQL because Prisma's groupBy cannot bucket
-        //     by a date expression; the counting still happens in Postgres.
         prisma.$queryRaw<MonthlyRegistrationRow[]>`
           SELECT
             to_char(date_trunc('month', c.created_at + ${TZ_SHIFT}), 'YYYY-MM') AS bucket,
@@ -255,7 +220,6 @@ export async function getMonthlyAnalytics(
           GROUP BY 1
         `,
 
-        // 2 ─ Orders (stamps given) per month.
         prisma.$queryRaw<MonthlyOrderRow[]>`
           SELECT
             to_char(date_trunc('month', o.created_at + ${TZ_SHIFT}), 'YYYY-MM') AS bucket,
@@ -267,10 +231,6 @@ export async function getMonthlyAnalytics(
           GROUP BY 1
         `,
 
-        // 3 ─ Claimed rewards per month, dated by when they were CLAIMED.
-        //     Joined to orders so the branch filter has something to match:
-        //     Reward has no branch of its own. The join never changes the
-        //     count — Reward.orderId is NOT NULL and unique.
         prisma.$queryRaw<MonthlyRewardRow[]>`
           SELECT
             to_char(date_trunc('month', r.claimed_at + ${TZ_SHIFT}), 'YYYY-MM') AS bucket,
@@ -285,7 +245,6 @@ export async function getMonthlyAnalytics(
           GROUP BY 1
         `,
 
-        // 4 ─ Day-by-day orders for the selected month.
         prisma.$queryRaw<DailyOrderRow[]>`
           SELECT
             to_char(date_trunc('day', o.created_at + ${TZ_SHIFT}), 'YYYY-MM-DD') AS bucket,
@@ -297,7 +256,6 @@ export async function getMonthlyAnalytics(
           GROUP BY 1
         `,
 
-        // 5 ─ Day-by-day claimed rewards for the selected month.
         prisma.$queryRaw<DailyRewardRow[]>`
           SELECT
             to_char(date_trunc('day', r.claimed_at + ${TZ_SHIFT}), 'YYYY-MM-DD') AS bucket,
@@ -313,9 +271,6 @@ export async function getMonthlyAnalytics(
         `,
       ]);
 
-    // ─── Densify the monthly series ───────────────────────────────────────────
-    // Postgres only returns months that actually have rows; the chart needs a
-    // continuous x-axis, so gaps become explicit zeroes.
     const registrationsByMonth = new Map(
       monthlyRegistrations.map((r) => [r.bucket, r.registrations])
     );
@@ -335,23 +290,16 @@ export async function getMonthlyAnalytics(
       });
     }
 
-    // ─── KPIs ────────────────────────────────────────────────────────────────
     const currentKey = monthKey(year, month);
     const previousKey = monthKey(year, month - 1);
     const current = trend.find((p) => p.key === currentKey);
     const previous = trend.find((p) => p.key === previousKey);
 
-    // The launch month has no predecessor. Reporting `previous: 0` there would
-    // read as "last month we served nobody" rather than "there was no last
-    // month", so the baseline is dropped entirely instead of fabricated.
     const hasBaseline = selectedIndex > SYSTEM_START_INDEX;
 
     const kpi = (value: number, prev: number): Kpi => ({
       value,
       previous: hasBaseline ? prev : null,
-      // A 0 → n jump has no meaningful percentage either (it is division by
-      // zero, not "+∞%"). The UI renders a neutral dash for null in both cases
-      // instead of a fake trend.
       changePct: hasBaseline && prev > 0 ? ((value - prev) / prev) * 100 : null,
     });
 
@@ -364,8 +312,6 @@ export async function getMonthlyAnalytics(
       rewards: kpi(current?.rewards ?? 0, previous?.rewards ?? 0),
     };
 
-    // ─── Densify the daily series ────────────────────────────────────────────
-    // Day 0 of the next month = last day of this one.
     const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
     const ordersByDay = new Map(dailyOrders.map((r) => [r.bucket, r.orders]));
     const rewardsByDay = new Map(dailyRewards.map((r) => [r.bucket, r.rewards]));

@@ -40,10 +40,6 @@ export function RecentActivitySection() {
   const [crossBranch, setCrossBranch] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // `now` lives in state rather than being read during render: Date.now() in a
-  // render body is impure (react-hooks/purity) and would also make the server
-  // and client disagree at hydration. It starts null, which is one of the two
-  // conditions for showing the skeleton below.
   const [now, setNow] = useState<number | null>(null);
 
   const load = useCallback(async () => {
@@ -68,19 +64,10 @@ export function RecentActivitySection() {
     let cancelled = false;
 
     const refresh = () => {
-      // A backgrounded tab (the cashier switched apps) would otherwise keep
-      // hitting the DB for a list nobody is looking at. The visibilitychange
-      // listener below fetches immediately when they come back, so the feed is
-      // never stale on screen.
       if (document.visibilityState === "hidden") return;
       if (!cancelled) void load();
     };
 
-    // Deferred to a microtask rather than called straight from the effect
-    // body: `load()` resolves its first `setState` eagerly enough that the
-    // React Compiler's `react-hooks/set-state-in-effect` rule treats it as a
-    // synchronous set, which would cascade an extra render pass. Queuing it
-    // moves the state write past the effect's own commit.
     queueMicrotask(() => {
       if (!cancelled) void load();
     });
@@ -91,14 +78,7 @@ export function RecentActivitySection() {
     }, TICK_MS);
 
     document.addEventListener("visibilitychange", refresh);
-    // Coming back from the till (/staff/customer/[uuid]) in the same tab does
-    // not fire visibilitychange, and neither does alt-tabbing back to an
-    // already-visible tab. `focus` catches both, so a stamp taken seconds ago
-    // shows up the moment the cashier looks at this list again rather than at
-    // the next poll tick.
     window.addEventListener("focus", refresh);
-    // Restoring from the bfcache (browser back after stamping) replays neither
-    // of the above; pageshow is the only event that fires on that path.
     window.addEventListener("pageshow", refresh);
 
     return () => {

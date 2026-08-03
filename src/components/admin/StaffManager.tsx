@@ -27,10 +27,6 @@ export function StaffManager({ initialUsers, branches, currentUserId }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [showForm, setShowForm] = useState(false);
-  // Mirror the server list locally so a delete/toggle disappears immediately
-  // instead of waiting on the router.refresh() round-trip, and re-adopt the
-  // server data whenever a fresh render arrives (React's "adjust state on
-  // prop change" pattern — no effect, no extra render).
   const [users, setUsers] = useState<User[]>(initialUsers);
   const [syncedUsers, setSyncedUsers] = useState(initialUsers);
   if (initialUsers !== syncedUsers) {
@@ -56,8 +52,6 @@ export function StaffManager({ initialUsers, branches, currentUserId }: Props) {
   function handleToggle(id: string, isActive: boolean, name: string) {
     startTransition(async () => {
       const r = await toggleUserActive(id, isActive);
-      // A Server Action can legitimately refuse (self-lockout, last admin).
-      // Never report success without looking at what came back.
       if (!r?.success) {
         toast.error(r?.error ?? "Kullanıcı durumu değiştirilemedi");
         return;

@@ -1,4 +1,3 @@
-// src/actions/admin.ts
 "use server";
 
 import { prisma } from "@/lib/prisma";
@@ -10,23 +9,6 @@ import { z } from "zod";
 import bcrypt from "bcryptjs";
 import { Prisma } from "@/generated/prisma/client";
 
-// ─── Auth Guards ──────────────────────────────────────────────────────────────
-// Two flavours on purpose:
-//
-//  • ensureAdmin() — for MUTATIONS. Returns a discriminated result instead of
-//    throwing. A Server Action that throws crosses the RSC boundary as an
-//    opaque "An error occurred in the Server Components render" digest, which
-//    the client `await` sees as a rejected promise inside startTransition →
-//    unhandled rejection → error overlay. A returned `{ success: false }` lets
-//    the UI raise a proper toast (e.g. after the session silently expires).
-//
-//  • requireAdmin() — for READS rendered by a Server Component page, where a
-//    thrown error is caught by the route's error boundary as intended.
-//
-// Both resolve the caller through getStaffPrincipal(), which re-reads the user
-// row from the DATABASE. Trusting `auth()` alone would mean an admin who was
-// demoted to STAFF, deactivated, or deleted keeps full staff-management and
-// campaign-rule powers until their JWT expires — up to 30 days.
 type AdminGuard =
   | { ok: true; staff: StaffPrincipal }
   | { ok: false; error: string };
@@ -59,10 +41,6 @@ async function requireAdmin(): Promise<StaffPrincipal> {
   return guard.staff;
 }
 
-// ─── Shared Error Mapper ──────────────────────────────────────────────────────
-// Turns a Prisma/driver failure into a message a cashier can act on, instead
-// of the generic "işlem yapılamadı" that hides FK violations and Neon cold
-// starts behind the same string.
 function describeDbError(error: unknown, fallback: string): string {
   if (isDbConnectionError(error)) {
     return "Veritabanı bağlantısı zaman aşımına uğradı. Lütfen tekrar deneyin.";
@@ -70,7 +48,6 @@ function describeDbError(error: unknown, fallback: string): string {
 
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
     switch (error.code) {
-      // Foreign key violation — a relation the schema does not nullify/cascade.
       case "P2003":
         return "Kayıt başka verilerle ilişkili olduğu için işlenemedi.";
       case "P2002":
@@ -83,11 +60,6 @@ function describeDbError(error: unknown, fallback: string): string {
   return fallback;
 }
 
-// ─── Dashboard Stats ──────────────────────────────────────────────────────────
-// Tek bir sorgu patladığında tüm admin panelinin çökmemesi için her sorgu
-// kendi hata sınırında çalışır: başarısız olan sorgu detaylı loglanır ve
-// güvenli varsayılan (0) döner. Promise.all burada asla reject olmaz çünkü
-// safeCount hiçbir zaman throw etmez.
 async function safeCount(
   label: string,
   query: () => Promise<number>
@@ -95,7 +67,6 @@ async function safeCount(
   try {
     return await query();
   } catch (error) {
-    // Prisma/DB hatasının detayını kaybetme — Vercel loglarında görünsün.
     console.error(`Admin stats fetch error [${label}]:`, error);
     return 0;
   }
@@ -119,7 +90,6 @@ export async function getDashboardStats() {
       safeCount("claimedRewards", () =>
         prisma.reward.count({ where: { status: "CLAIMED" } })
       ),
-      // Dashboard kartı "Aktif Şube" gösteriyor — pasif şubeleri sayma.
       safeCount("branches", () =>
         prisma.branch.count({ where: { isActive: true } })
       ),
@@ -127,7 +97,7 @@ export async function getDashboardStats() {
         prisma.order.count({
           where: {
             createdAt: {
-              gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000), // Last 7 days
+              gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
             },
           },
         })
@@ -144,8 +114,6 @@ export async function getDashboardStats() {
       recentOrders,
     };
   } catch (error) {
-    // safeCount sayesinde buraya normalde düşülmez; yine de beklenmedik bir
-    // hata olursa (ör. auth sonrası runtime hatası) paneli çökertme.
     console.error("Admin stats fetch error:", error);
     return {
       totalOrders: 0,
@@ -159,7 +127,6 @@ export async function getDashboardStats() {
   }
 }
 
-// ─── Campaign Rules CRUD ──────────────────────────────────────────────────────
 export async function getCampaignRules() {
   await requireAdmin();
 
@@ -178,9 +145,6 @@ export async function getCampaignRules() {
   }
 }
 
-// Upper bound is a sanity limit only — the campaign length is fully
-// admin-configurable (10, 15, 20, 40 ...) and every card + staff counter
-// follows whatever is set here. It must NOT be pinned to 15.
 const MAX_RULE_THRESHOLD = 100;
 
 const RuleSchema = z.object({
@@ -211,7 +175,6 @@ export async function createCampaignRule(formData: FormData) {
       return { success: false, error: parsed.error.issues[0]?.message };
     }
 
-    // Check for duplicate threshold
     const existing = await prisma.campaignRule.findUnique({
       where: { threshold: parsed.data.threshold },
     });
@@ -224,7 +187,6 @@ export async function createCampaignRule(formData: FormData) {
     }
 
     await prisma.campaignRule.create({ data: parsed.data });
-    // A rule change alters maxStamps for EVERY customer — purge all cards.
     revalidateCampaignSurfaces();
     return { success: true };
   } catch (error) {
@@ -245,7 +207,6 @@ export async function deleteCampaignRule(id: string) {
   }
 
   try {
-    // Check if rule has associated rewards
     const rewardsCount = await prisma.reward.count({
       where: { ruleId: id },
     });
@@ -259,17 +220,12 @@ export async function deleteCampaignRule(id: string) {
 
     const deleted = await prisma.campaignRule.delete({ where: { id } });
 
-    // Purge every cached RSC payload that quotes a threshold so a subsequent
-    // router.refresh() (or a hard page reload) reliably reflects the delete.
     revalidateCampaignSurfaces();
 
     return { success: true, id: deleted.id };
   } catch (error) {
     console.error("[deleteCampaignRule] Error:", error);
 
-    // Prisma throws P2025 when the record no longer exists — treat that as
-    // an already-deleted rule rather than a generic failure so the UI can
-    // still remove it from the list.
     if (
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === "P2025"
@@ -299,7 +255,6 @@ export async function toggleRuleActive(id: string, isActive: boolean) {
       data: { isActive },
     });
 
-    // Activating/deactivating a rule can change maxStamps globally.
     revalidateCampaignSurfaces();
     return { success: true };
   } catch (error) {
@@ -311,7 +266,6 @@ export async function toggleRuleActive(id: string, isActive: boolean) {
   }
 }
 
-// ─── Branch Management ────────────────────────────────────────────────────────
 export async function getBranches() {
   await requireAdmin();
 
@@ -380,7 +334,6 @@ export async function deleteBranch(id: string) {
   }
 
   try {
-    // Check if branch has associated users or customers
     const branch = await prisma.branch.findUnique({
       where: { id },
       include: {
@@ -394,10 +347,6 @@ export async function deleteBranch(id: string) {
       return { success: false, error: "Şube bulunamadı veya zaten silinmiş" };
     }
 
-    // Deliberate business rule (NOT a schema limitation): the FKs are
-    // onDelete: SetNull, so Postgres would happily orphan every staff member
-    // and customer of this branch. Refuse instead and make the admin move
-    // them first, otherwise a mis-click silently unassigns the whole store.
     if (branch._count.users > 0 || branch._count.customers > 0) {
       return {
         success: false,
@@ -412,7 +361,6 @@ export async function deleteBranch(id: string) {
   } catch (error) {
     console.error("[deleteBranch] Error:", error);
 
-    // Already gone — let the UI drop the card instead of showing a failure.
     if (
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === "P2025"
@@ -428,7 +376,6 @@ export async function deleteBranch(id: string) {
   }
 }
 
-// ─── Staff Management ─────────────────────────────────────────────────────────
 export async function getStaffUsers() {
   await requireAdmin();
 
@@ -479,20 +426,14 @@ export async function createStaffUser(formData: FormData) {
       return { success: false, error: parsed.error.issues[0]?.message };
     }
 
-    // Email is stored/compared verbatim, and NextAuth looks the user up with
-    // findUnique({ email }) — so "Admin@X.com" would create a second account
-    // that can never log in with the address the admin typed. Normalize once,
-    // here, and use the normalized value for both the check and the insert.
     const email = parsed.data.email.trim().toLowerCase();
 
-    // Check for duplicate email
     const existing = await prisma.user.findUnique({ where: { email } });
 
     if (existing) {
       return { success: false, error: "Bu email adresi zaten kayıtlı" };
     }
 
-    // Hash password
     const passwordHash = await bcrypt.hash(parsed.data.password, 12);
 
     await prisma.user.create({
@@ -501,8 +442,6 @@ export async function createStaffUser(formData: FormData) {
         email,
         passwordHash,
         role: parsed.data.role,
-        // "" from an unselected <select> is not a valid Branch id — it would
-        // fail the FK (P2003). Empty string means "no branch".
         branchId: parsed.data.branchId?.trim() || null,
       },
     });
@@ -537,8 +476,6 @@ export async function toggleUserActive(id: string, isActive: boolean) {
   }
   const userId = id.trim();
 
-  // authorize() rejects `!user.isActive`, so deactivating yourself is an
-  // instant self-lockout on the next request.
   if (!isActive && staff.id === userId) {
     return {
       success: false,
@@ -578,7 +515,6 @@ async function wouldLockOutLastAdmin(userId: string): Promise<string | null> {
     select: { role: true, isActive: true },
   });
 
-  // Only an ACTIVE admin is currently keeping the door open.
   if (!target || target.role !== "ADMIN" || !target.isActive) return null;
 
   const otherActiveAdmins = await prisma.user.count({
@@ -612,15 +548,11 @@ export async function deleteStaffUser(
   if (!guard.ok) return { success: false, error: guard.error };
   const { staff } = guard;
 
-  // ─── Input validation ──────────────────────────────────────────────────────
   if (typeof id !== "string" || id.trim().length === 0) {
     return { success: false, error: "Geçersiz kullanıcı kimliği" };
   }
   const userId = id.trim();
 
-  // ─── Self-deletion ─────────────────────────────────────────────────────────
-  // Checked before any DB round-trip: it is an authorization decision, not a
-  // data problem.
   if (staff.id === userId) {
     return {
       success: false,
@@ -639,13 +571,11 @@ export async function deleteStaffUser(
       return { success: false, error: "Kullanıcı bulunamadı veya zaten silinmiş" };
     }
 
-    // ─── Last-admin guard ────────────────────────────────────────────────────
     const lockout = await wouldLockOutLastAdmin(userId);
     if (lockout) return { success: false, error: lockout };
 
     const detachedOrders = target._count.orders;
 
-    // ─── Atomic detach + delete ──────────────────────────────────────────────
     await prisma.$transaction([
       prisma.order.updateMany({
         where: { staffId: userId },
@@ -660,8 +590,6 @@ export async function deleteStaffUser(
   } catch (error) {
     console.error("[deleteStaffUser] Error:", error);
 
-    // P2025 — another admin deleted the same row first. Not a failure from
-    // this admin's point of view; the goal state is reached either way.
     if (
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === "P2025"

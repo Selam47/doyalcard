@@ -68,7 +68,6 @@ export async function getStaffPrincipal(): Promise<StaffPrincipal | null> {
       },
     });
 
-    // Deleted between token issue and now, or deactivated since login.
     if (!user || !user.isActive) return null;
     if (!STAFF_ROLES.includes(user.role)) return null;
 
@@ -82,7 +81,6 @@ export async function getStaffPrincipal(): Promise<StaffPrincipal | null> {
       isAdmin: user.role === "ADMIN",
     };
   } catch (error) {
-    // A database hiccup must never be read as "authorized".
     console.error("[staff-guard] principal lookup failed:", error);
     return null;
   }

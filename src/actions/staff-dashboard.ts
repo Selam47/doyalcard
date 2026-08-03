@@ -1,4 +1,3 @@
-// src/actions/staff-dashboard.ts
 "use server";
 
 import { prisma } from "@/lib/prisma";
@@ -8,7 +7,6 @@ import { getCampaignConfig } from "@/lib/campaign-rules.server";
 import { clampCycleCount } from "@/lib/campaign-rules";
 import type { Prisma } from "@/generated/prisma/client";
 
-// ─── Tuning ───────────────────────────────────────────────────────────────────
 /** Rows in the activity feed. Enough to fill a glance, short enough to scan. */
 const ACTIVITY_LIMIT = 12;
 
@@ -21,7 +19,6 @@ const NEAR_REWARD_DISTANCE = 2;
  */
 const NEAR_REWARD_LIMIT = 25;
 
-// ─── Branch scoping ───────────────────────────────────────────────────────────
 /**
  * Both readers below are Server Actions — reachable by their action id from
  * anywhere, not just from the /staff page middleware already gates. So the
@@ -52,9 +49,6 @@ type Scope =
   | { ok: false; error: string };
 
 async function resolveScope(): Promise<Scope> {
-  // Role AND branch come from the database row, not the JWT. A staffer moved
-  // to a different branch would otherwise keep reading their old branch's
-  // customer list until their token expired.
   const guard = await authorizeStaff();
   if (!guard.ok) return { ok: false, error: guard.error };
   const { staff } = guard;
@@ -70,19 +64,16 @@ async function resolveScope(): Promise<Scope> {
   };
 }
 
-// ─── Feature 1: Recent activity feed ──────────────────────────────────────────
 export interface ActivityItem {
   id: string;
   /** ISO string — Date instances are re-serialised per call, strings are stable. */
   createdAt: string;
 
-  // ── WHO THE STAMP BELONGS TO (primary line) ──────────────────────────────
   customerId: string;
   customerName: string;
   customerPhone: string;
   customerQrUuid: string;
 
-  // ── WHO PERFORMED IT (secondary line) ────────────────────────────────────
   /** null when the staff account was deleted (Order.staffId is SetNull). */
   staffName: string | null;
   /** null when the branch was deleted (Order.branchId is SetNull) or unset. */
@@ -122,9 +113,6 @@ export async function getRecentActivity(): Promise<RecentActivityResult> {
   try {
     const orders = await prisma.order.findMany({
       where: scope.orderWhere,
-      // Strictly newest-first. `id` is a secondary key only to break ties:
-      // two cashiers stamping inside the same millisecond would otherwise get
-      // an unstable order, which makes rows visibly swap places between polls.
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: ACTIVITY_LIMIT,
       select: {
@@ -133,8 +121,6 @@ export async function getRecentActivity(): Promise<RecentActivityResult> {
         customer: {
           select: { id: true, name: true, phone: true, qrUuid: true },
         },
-        // The staff member who performed the stamp — NOT the customer. These
-        // are two different people and the UI must never conflate them.
         staff: { select: { name: true } },
         branch: { select: { name: true } },
         reward: { select: { rule: { select: { rewardName: true } } } },
@@ -171,7 +157,6 @@ export async function getRecentActivity(): Promise<RecentActivityResult> {
   }
 }
 
-// ─── Feature 2: Customers close to a reward ───────────────────────────────────
 export interface NearRewardCustomer {
   id: string;
   name: string;
@@ -216,12 +201,8 @@ export async function getCustomersNearReward(): Promise<NearRewardResult> {
   try {
     const { rules } = await getCampaignConfig();
 
-    // No campaign configured ⇒ there is no "next reward" to be close to.
     if (rules.length === 0) return { success: true, customers: [] };
 
-    // count → the nearest threshold that count is approaching.
-    // Rules arrive ascending by threshold; iterating distance-first means a
-    // closer threshold always claims a count before a farther one can.
     const targetByCount = new Map<
       number,
       { threshold: number; rewardName: string; remaining: number }
@@ -230,8 +211,6 @@ export async function getCustomersNearReward(): Promise<NearRewardResult> {
     for (let remaining = 1; remaining <= NEAR_REWARD_DISTANCE; remaining++) {
       for (const rule of rules) {
         const count = rule.threshold - remaining;
-        // count 0 would sweep in every customer who has never ordered — the
-        // section is meant to flag momentum, not list the whole branch.
         if (count <= 0) continue;
         if (targetByCount.has(count)) continue;
         targetByCount.set(count, {
@@ -244,7 +223,6 @@ export async function getCustomersNearReward(): Promise<NearRewardResult> {
 
     if (targetByCount.size === 0) return { success: true, customers: [] };
 
-    // Group the qualifying counts by distance so each bucket is one query.
     const countsByDistance = new Map<number, number[]>();
     for (const [count, target] of targetByCount) {
       const bucket = countsByDistance.get(target.remaining);
@@ -262,8 +240,6 @@ export async function getCustomersNearReward(): Promise<NearRewardResult> {
             isActive: true,
             currentCycleCount: { in: countsByDistance.get(distance)! },
           },
-          // Most recently active first within a distance bucket — the person
-          // who was just here is the one the cashier is most likely to see.
           orderBy: { updatedAt: "desc" },
           take: NEAR_REWARD_LIMIT,
           select: {
@@ -279,16 +255,11 @@ export async function getCustomersNearReward(): Promise<NearRewardResult> {
 
     const customers: NearRewardCustomer[] = [];
 
-    // Buckets are concatenated in ascending-distance order, so the final list
-    // is sorted by "closest to reward" by construction.
     for (const bucket of buckets) {
       for (const customer of bucket) {
         if (customers.length >= NEAR_REWARD_LIMIT) break;
 
         const target = targetByCount.get(customer.currentCycleCount);
-        // Defensive: an admin editing thresholds between the rule read and the
-        // customer read could leave a row without a match. Skip rather than
-        // render a nonsensical "0 pul kaldı".
         if (!target) continue;
 
         customers.push({
@@ -296,8 +267,6 @@ export async function getCustomersNearReward(): Promise<NearRewardResult> {
           name: customer.name,
           phone: customer.phone,
           qrUuid: customer.qrUuid,
-          // Guard against a stranded legacy count sitting above the active
-          // threshold, exactly as the card surfaces do.
           currentCycleCount: clampCycleCount(
             customer.currentCycleCount,
             target.threshold

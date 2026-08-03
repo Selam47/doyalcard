@@ -1,4 +1,3 @@
-// src/app/admin/page.tsx
 import type { Metadata } from "next";
 
 import { getDashboardStats } from "@/actions/admin";
@@ -7,8 +6,6 @@ import { MonthlyAnalytics } from "@/components/admin/MonthlyAnalytics";
 import { currentIstanbulMonth } from "@/lib/istanbul-time";
 import Link from "next/link";
 
-// Stats (orders, rewards, pending rewards) change continuously — never
-// statically cache this page.
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = { title: "Admin Dashboard" };
@@ -19,7 +16,6 @@ export default async function AdminDashboard() {
     getAnalyticsBranches(),
   ]);
 
-  // Resolved server-side so SSR and hydration agree on "the current month".
   const today = currentIstanbulMonth();
 
   const cards = [

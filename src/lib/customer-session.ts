@@ -6,8 +6,19 @@
 import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 
-const COOKIE_NAME = "customer_session";
-const MAX_AGE = 60 * 60 * 24 * 30; // 30 days in seconds
+import { CUSTOMER_SESSION_COOKIE } from "@/lib/session-cookie";
+
+const COOKIE_NAME = CUSTOMER_SESSION_COOKIE;
+
+/**
+ * JWT'nin kendi son kullanma süresi — cookie'nin DEĞİL.
+ *
+ * Cookie artık bir *session cookie* (aşağıda `maxAge` yok), yani tarayıcı
+ * kapanınca silinir ve `TabSessionGuard` yeni sekmede zaten düşürür. Bu TTL
+ * sadece son savunma hattıdır: kopyalanmış bir token'ın sonsuza kadar geçerli
+ * kalmasını engeller. Eski 30 günlük değer bu politikayla çelişiyordu.
+ */
+const TOKEN_TTL_SECONDS = 60 * 60 * 12;
 
 function getSecret(): Uint8Array {
   const secret = process.env.AUTH_SECRET;
@@ -28,7 +39,7 @@ export async function setCustomerSession(
   const token = await new SignJWT({ customerId, phone })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
-    .setExpirationTime(`${MAX_AGE}s`)
+    .setExpirationTime(`${TOKEN_TTL_SECONDS}s`)
     .sign(getSecret());
 
   const cookieStore = await cookies();
@@ -36,7 +47,8 @@ export async function setCustomerSession(
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
-    maxAge: MAX_AGE,
+    // maxAge / expires YOK → session cookie. Tarayıcı kapanınca düşer.
+    // Buraya bir maxAge geri eklemek "kalıcı olmayan oturum" garantisini bozar.
     path: "/",
   });
 }

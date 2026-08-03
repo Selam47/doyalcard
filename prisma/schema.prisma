@@ -1,25 +1,12 @@
-// prisma/schema.prisma
-
-// Prisma 7: `prisma-client-js` deprecated, `prisma-client` kullanılıyor ve
-// `output` artık ZORUNLU (client node_modules'a üretilmiyor).
-// Import: import { PrismaClient } from "@/generated/prisma/client"
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/prisma"
 }
 
-// Prisma 7 ile driver adapter'lar stable; `url` / `directUrl` datasource
-// bloğunda desteklenmiyor. Bağlantı stringleri iki yerde:
-//   - prisma.config.ts  → DIRECT_URL (CLI: migrate / db push / studio)
-//   - src/lib/prisma.ts → DATABASE_URL (pooled, @prisma/adapter-pg)
-// https://pris.ly/d/config-datasource
 datasource db {
   provider = "postgresql"
 }
 
-// ─────────────────────────────────────────────
-// Branch
-// ─────────────────────────────────────────────
 model Branch {
   id        String   @id @default(cuid())
   name      String
@@ -35,9 +22,6 @@ model Branch {
   @@map("branches")
 }
 
-// ─────────────────────────────────────────────
-// User (Staff & Admin)
-// ─────────────────────────────────────────────
 model User {
   id           String    @id @default(cuid())
   name         String
@@ -66,19 +50,12 @@ enum Role {
   @@map("role")
 }
 
-// ─────────────────────────────────────────────
-// Customer
-// ─────────────────────────────────────────────
 model Customer {
   id String @id @default(cuid())
 
   name String
-  // Kayıt öncesi E.164'e normalize et (+905xxxxxxxxx) — aksi halde
-  // "0532...", "532...", "+90532..." aynı kişi için 3 farklı satır olur.
   phone String @unique
 
-  // @db.Uuid: Postgres'te 16 byte native tip. text olarak tutulursa
-  // 36 byte + index şişer. QR ile arama sıcak yol olduğu için önemli.
   qrUuid String @unique @default(uuid()) @map("qr_uuid") @db.Uuid
 
   currentCycleCount Int @default(0) @map("current_cycle_count")
@@ -102,16 +79,10 @@ model Customer {
   @@map("customers")
 }
 
-// ─────────────────────────────────────────────
-// Order
-// ─────────────────────────────────────────────
 model Order {
   id        String   @id @default(cuid())
   createdAt DateTime @default(now()) @map("created_at")
 
-  // KVKK silme talebinde müşteriyle birlikte siparişler de gider.
-  // Ciro raporu tutmak istiyorsan Cascade yerine Restrict yapıp
-  // Customer üzerinde anonimleştirme (soft delete) uygula.
   customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   customerId String   @map("customer_id")
 
@@ -123,60 +94,47 @@ model Order {
 
   reward Reward?
 
-  // Composite index'ler: "müşterinin son siparişleri", "şubenin günlük
-  // siparişleri", "personel performansı" sorgularının tamamını karşılar.
   @@index([customerId, createdAt(sort: Desc)])
   @@index([branchId, createdAt(sort: Desc)])
   @@index([staffId, createdAt(sort: Desc)])
   @@map("orders")
 }
 
-// ─────────────────────────────────────────────
-// CampaignRule
-// ─────────────────────────────────────────────
 model CampaignRule {
   id           String   @id @default(cuid())
-  threshold    Int      @unique // @@unique([threshold]) yerine alan seviyesi
+  threshold    Int      @unique
   rewardName   String   @map("reward_name")
   isResetPoint Boolean  @default(false) @map("is_reset_point")
   isActive     Boolean  @default(true) @map("is_active")
-  validDays    Int?     @map("valid_days") // ödülün geçerlilik süresi (gün)
+  validDays    Int?     @map("valid_days")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
   rewards Reward[]
 
-  // Sipariş sonrası "aktif kuralları eşiğe göre sırala" sorgusu
   @@index([isActive, threshold])
   @@map("campaign_rules")
 }
 
-// ─────────────────────────────────────────────
-// Reward
-// ─────────────────────────────────────────────
 model Reward {
   id        String       @id @default(cuid())
   status    RewardStatus @default(PENDING)
   createdAt DateTime     @default(now()) @map("created_at")
   claimedAt DateTime?    @map("claimed_at")
-  // EXPIRED statüsü vardı ama süre bilgisi yoktu — cron/job bu alana bakar.
   expiresAt DateTime?    @map("expires_at")
   updatedAt DateTime     @updatedAt @map("updated_at")
 
   customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   customerId String   @map("customer_id")
 
-  // Ödül üretmiş bir kural silinemesin, önce isActive=false yapılsın.
   rule   CampaignRule @relation(fields: [ruleId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   ruleId String       @map("rule_id")
 
   order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   orderId String @unique @map("order_id")
 
-  // "Bu müşterinin bekleyen ödülleri" — kasadaki en sık sorgu
   @@index([customerId, status])
   @@index([ruleId])
-  // Süresi dolanları süpüren job için
   @@index([status, expiresAt])
   @@map("rewards")
 }

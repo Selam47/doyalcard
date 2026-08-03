@@ -25,12 +25,6 @@ export function RulesManager({ initialRules }: Props) {
   const [isPending, startTransition] = useTransition();
   const [showForm, setShowForm] = useState(false);
   const [rules, setRules] = useState<Rule[]>(initialRules);
-  // Tracks the last `initialRules` reference we've synced from, so we can
-  // detect a fresh server render (e.g. after router.refresh() resolves) and
-  // adopt its data. Updating state directly during render like this — rather
-  // than in a useEffect — is React's recommended pattern for "adjusting
-  // state when props change": React re-renders immediately with the new
-  // state before committing, so there's no extra render or effect involved.
   const [syncedRules, setSyncedRules] = useState(initialRules);
   if (initialRules !== syncedRules) {
     setSyncedRules(initialRules);
@@ -61,8 +55,6 @@ export function RulesManager({ initialRules }: Props) {
         return;
       }
 
-      // Update local state immediately so the row disappears right away,
-      // instead of waiting on a full server round-trip.
       setRules((prev) => prev.filter((rule) => rule.id !== id));
       toast.success("Kural silindi");
       router.refresh();

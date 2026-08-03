@@ -1,32 +1,21 @@
 "use client";
 
-// src/components/customer/CustomerPhoneLoginForm.tsx
-// Two-step Firebase Phone Auth flow:
-//   Step 1 → Enter phone number, send OTP via Firebase invisible reCAPTCHA
-//   Step 2 → Enter 6-digit OTP, confirm, POST ID token to /api/customer/auth
-//
-// reCAPTCHA lifecycle rules followed here:
-//  1. The container div is ALWAYS mounted (never conditionally rendered) and
-//     carries a stable id="recaptcha-container" so Firebase resolves it via
-//     document.getElementById — the most reliable lookup across SDK versions.
-//  2. destroyRecaptcha() calls verifier.clear() AND wipes innerHTML so
-//     Firebase's internal widget registry is fully reset.
-//  3. createRecaptcha() always destroys first, then creates + render()s a
-//     fresh verifier.  render() is called eagerly so the invisible widget is
-//     pre-registered before signInWithPhoneNumber is invoked.
-//  4. Every error path and every "go back" path calls destroyRecaptcha() so
-//     the next send attempt always starts with a clean slate.
-//  5. Phone numbers are normalized through the shared toE164() helper
-//     (src/lib/phone.ts — also used by the customer API routes and staff
-//     registration action) so the leading national "0" (e.g. "0555 123 45
-//     67") never leaks into the E.164 string sent to Firebase — this was
-//     silently producing invalid numbers like "+900555..." and causing
-//     auth/invalid-phone-number.
-
-// Extend window so TypeScript accepts window.recaptchaVerifier
 declare global {
   interface Window {
     recaptchaVerifier?: import("firebase/auth").RecaptchaVerifier;
+  }
+
+  /**
+   * WebOTP API — not yet in TypeScript's DOM lib.
+   * `navigator.credentials.get({ otp: { transport: ["sms"] } })` resolves with
+   * an OTPCredential on Chrome/Android when an SMS bound to this origin arrives.
+   */
+  interface OTPCredential extends Credential {
+    readonly code: string;
+  }
+
+  interface CredentialRequestOptions {
+    otp?: { transport: string[] };
   }
 }
 
@@ -41,7 +30,6 @@ import { auth } from "@/lib/firebase";
 import { toE164, E164_REGEX } from "@/lib/phone";
 import { toast } from "sonner";
 
-// ── Country code options ──────────────────────────────────────────────────────
 const COUNTRY_CODES = [
   { code: "+90", flag: "🇹🇷", label: "TR" },
   { code: "+1",  flag: "🇺🇸", label: "US" },
@@ -51,6 +39,8 @@ const COUNTRY_CODES = [
   { code: "+31", flag: "🇳🇱", label: "NL" },
   { code: "+971", flag: "🇦🇪", label: "AE" },
 ];
+
+const OTP_LENGTH = 6;
 
 type Step = "phone" | "otp";
 
@@ -62,13 +52,6 @@ interface CustomerPhoneLoginFormProps {
 export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhoneLoginFormProps) {
   const router = useRouter();
 
-  // ── Redirect already-logged-in customers, but never on Back/Forward ────────
-  // A server-side redirect() in page.tsx used to handle this, but it fired on
-  // every render of this route — including the render triggered by the
-  // browser Back button — which bounced logged-in customers straight back to
-  // /customer/dashboard and made it impossible to Back out to "/". The
-  // Navigation Timing API lets us tell a fresh visit apart from a
-  // back/forward navigation and only redirect in the former case.
   useEffect(() => {
     if (!alreadyLoggedIn) return;
     const [entry] = performance.getEntriesByType("navigation") as PerformanceNavigationTiming[];
@@ -76,24 +59,29 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
     router.replace("/customer/dashboard");
   }, [alreadyLoggedIn, router]);
 
-  // ── State ─────────────────────────────────────────────────────────────────
   const [step, setStep] = useState<Step>("phone");
   const [countryCode, setCountryCode] = useState("+90");
   const [phoneNumber, setPhoneNumber] = useState("");
-  const [otp, setOtp] = useState(["", "", "", "", "", ""]);
+  /** The OTP is a single string — one real <input> drives six styled cells. */
+  const [otp, setOtp] = useState("");
+  const [otpFocused, setOtpFocused] = useState(false);
   const [loading, setLoading] = useState(false);
   const [resendCountdown, setResendCountdown] = useState(0);
 
   const confirmationRef = useRef<ConfirmationResult | null>(null);
   const recaptchaVerifierRef = useRef<RecaptchaVerifier | null>(null);
-  // Direct ref to the stable container DOM node (never conditionally rendered)
   const recaptchaContainerRef = useRef<HTMLDivElement | null>(null);
-  const otpInputsRef = useRef<(HTMLInputElement | null)[]>([]);
+  const otpInputRef = useRef<HTMLInputElement | null>(null);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  /**
+   * Guards the auto-submit effect. Auto-fill (iOS keyboard suggestion or WebOTP)
+   * and a fast typist can both push the length to 6 while a confirm() is already
+   * in flight; without this ref Firebase would receive two confirms for one code.
+   */
+  const verifyingRef = useRef(false);
+  /** The last code we already sent to confirm() — never re-submit it unchanged. */
+  const attemptedCodeRef = useRef<string | null>(null);
 
-  // ── destroyRecaptcha ──────────────────────────────────────────────────────
-  // Fully tears down the verifier AND wipes the container innerHTML so
-  // Firebase's internal registry no longer sees a rendered widget.
   const destroyRecaptcha = useCallback(() => {
     if (recaptchaVerifierRef.current) {
       try {
@@ -103,15 +91,12 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
       }
       recaptchaVerifierRef.current = null;
     }
-    // Remove from window to prevent stale references
     delete window.recaptchaVerifier;
-    // Manually clear the DOM node so next RecaptchaVerifier starts fresh
     if (recaptchaContainerRef.current) {
       recaptchaContainerRef.current.innerHTML = "";
     }
   }, []);
 
-  // ── Cleanup on unmount ───────────────────────────────────────────────────
   useEffect(() => {
     return () => {
       if (countdownRef.current) clearInterval(countdownRef.current);
@@ -119,55 +104,36 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
     };
   }, [destroyRecaptcha]);
 
-  // ── createRecaptcha ───────────────────────────────────────────────────────
-  // Always destroys any previous instance, then creates + eagerly renders a
-  // fresh invisible verifier using the string id 'recaptcha-container'.
-  // Using a string id (resolved via document.getElementById internally by
-  // Firebase) is the most reliable approach and avoids the 503
-  // auth/error-code:-39 that can occur when passing a DOM element reference.
   const createRecaptcha = useCallback(async (): Promise<RecaptchaVerifier> => {
-    destroyRecaptcha(); // clean slate — prevents "already rendered" error
+    destroyRecaptcha();
 
     const verifier = new RecaptchaVerifier(
       auth,
-      "recaptcha-container", // string id — Firebase resolves via getElementById
+      "recaptcha-container",
       {
         size: "invisible",
-        // Called when the reCAPTCHA challenge is solved — token is ready to
-        // be consumed by signInWithPhoneNumber (Firebase handles this internally),
-        // so there's nothing to do with the response token here.
         callback: () => {
           // reCAPTCHA solved — allow SMS send
         },
-        // Called when the token expires before it is used.
-        // We clear (not destroy) the widget so it can silently re-arm itself
-        // without a full teardown, preventing captcha-check-failed on resend.
         "expired-callback": () => {
           if (window.recaptchaVerifier) {
             try { window.recaptchaVerifier.clear(); } catch { /* already gone */ }
           }
         },
-        // Called on a hard reCAPTCHA error — full teardown is required.
-        // The catch block in handleSendOtp shows the user-facing error.
         "error-callback": () => {
           destroyRecaptcha();
         },
       }
     );
 
-    // Expose on window so expired-callback / error-callback can reference it
-    // without closing over a potentially stale ref.
     window.recaptchaVerifier = verifier;
 
-    // Eagerly render the invisible widget so it is pre-registered before
-    // signInWithPhoneNumber is called — avoids async race conditions.
     await verifier.render();
 
     recaptchaVerifierRef.current = verifier;
     return verifier;
   }, [destroyRecaptcha]);
 
-  // ── startCountdown ────────────────────────────────────────────────────────
   const startCountdown = useCallback(() => {
     if (countdownRef.current) clearInterval(countdownRef.current);
     setResendCountdown(30);
@@ -183,19 +149,124 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
     }, 1000);
   }, []);
 
-  // ── handleGoBackToPhone ───────────────────────────────────────────────────
-  // Single source of truth for "go back to step 1" — always destroys verifier.
   const handleGoBackToPhone = useCallback(() => {
     destroyRecaptcha();
     confirmationRef.current = null;
     if (countdownRef.current) clearInterval(countdownRef.current);
     countdownRef.current = null;
+    verifyingRef.current = false;
+    attemptedCodeRef.current = null;
     setResendCountdown(0);
     setStep("phone");
-    setOtp(["", "", "", "", "", ""]);
+    setOtp("");
   }, [destroyRecaptcha]);
 
-  // ── Step 1: Send OTP ─────────────────────────────────────────────────────
+  /**
+   * Single entry point for verification. Called by the submit button, by the
+   * auto-submit effect (typed 6th digit / iOS auto-fill) and indirectly by the
+   * WebOTP listener, which only writes into `otp` state.
+   */
+  const verifyCode = useCallback(
+    async (code: string) => {
+      if (verifyingRef.current) return;
+      if (code.length !== OTP_LENGTH) {
+        toast.error("Lütfen 6 haneli kodu girin.");
+        return;
+      }
+      if (!confirmationRef.current) {
+        toast.error("Oturum süresi doldu. Lütfen yeni kod isteyin.");
+        handleGoBackToPhone();
+        return;
+      }
+
+      verifyingRef.current = true;
+      attemptedCodeRef.current = code;
+      setLoading(true);
+      // Dismiss the mobile keyboard while the request is in flight.
+      otpInputRef.current?.blur();
+
+      try {
+        const credential = await confirmationRef.current.confirm(code);
+        const idToken = await credential.user.getIdToken();
+
+        const res = await fetch("/api/customer/auth", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ idToken }),
+        });
+
+        if (!res.ok) throw new Error("Backend auth failed");
+
+        const data = await res.json();
+        toast.success(
+          data.isNew
+            ? "Hoş geldiniz! Hesabınız oluşturuldu."
+            : "Tekrar hoş geldiniz!"
+        );
+        router.push("/customer/dashboard");
+        router.refresh();
+      } catch (err: unknown) {
+        console.error("[OTP verify error]", err);
+        const errCode = (err as { code?: string }).code;
+        if (errCode === "auth/invalid-verification-code") {
+          toast.error("Hatalı doğrulama kodu. Lütfen tekrar deneyin.");
+          setOtp("");
+          attemptedCodeRef.current = null;
+          setTimeout(() => otpInputRef.current?.focus(), 50);
+        } else if (errCode === "auth/code-expired" || errCode === "auth/session-expired") {
+          toast.error("Kodun süresi doldu. Lütfen yeni kod isteyin.");
+          handleGoBackToPhone();
+        } else {
+          toast.error("Doğrulama başarısız. Lütfen tekrar deneyin.");
+        }
+      } finally {
+        verifyingRef.current = false;
+        setLoading(false);
+      }
+    },
+    [handleGoBackToPhone, router]
+  );
+
+  /**
+   * WebOTP API fallback (Chrome/Android). iOS Safari has no WebOTP — it relies
+   * on autocomplete="one-time-code" instead, which is why both are wired up.
+   *
+   * NOTE: WebOTP only fires when the SMS body ends with the origin-binding line
+   *   `@your-domain.com #123456`
+   * If the Firebase SMS template does not carry that suffix the promise simply
+   * never resolves, and the flow degrades silently to native auto-fill / typing.
+   */
+  useEffect(() => {
+    if (step !== "otp") return;
+    if (typeof window === "undefined") return;
+    if (!("OTPCredential" in window) || !navigator.credentials?.get) return;
+
+    const controller = new AbortController();
+
+    navigator.credentials
+      .get({ otp: { transport: ["sms"] }, signal: controller.signal })
+      .then((credential) => {
+        const received = (credential as OTPCredential | null)?.code;
+        const digits = received?.replace(/\D/g, "").slice(0, OTP_LENGTH) ?? "";
+        if (digits.length === OTP_LENGTH) setOtp(digits);
+      })
+      .catch(() => {
+        // AbortError on unmount/step change, or the user dismissed the prompt.
+      });
+
+    // Aborting is required — a pending WebOTP request otherwise outlives the step.
+    return () => controller.abort();
+  }, [step]);
+
+  /** Auto-confirm as soon as six digits land, whatever filled them. */
+  useEffect(() => {
+    if (step !== "otp") return;
+    if (otp.length !== OTP_LENGTH) return;
+    if (verifyingRef.current) return;
+    if (attemptedCodeRef.current === otp) return;
+    void verifyCode(otp);
+  }, [otp, step, verifyCode]);
+
   async function handleSendOtp(e: React.FormEvent) {
     e.preventDefault();
 
@@ -208,20 +279,20 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
 
     setLoading(true);
     try {
-      // Always create a fresh verifier for every send attempt
       const verifier = await createRecaptcha();
 
       const result = await signInWithPhoneNumber(auth, fullPhone, verifier);
       confirmationRef.current = result;
 
+      attemptedCodeRef.current = null;
+      verifyingRef.current = false;
+      setOtp("");
       setStep("otp");
       startCountdown();
       toast.success("Doğrulama kodu gönderildi!");
-      // Auto-focus first OTP cell after React re-renders the OTP form
-      setTimeout(() => otpInputsRef.current[0]?.focus(), 100);
+      setTimeout(() => otpInputRef.current?.focus(), 100);
     } catch (err: unknown) {
       console.error("[reCAPTCHA / OTP send error]", err);
-      // Always destroy on failure so the next attempt starts fresh
       destroyRecaptcha();
 
       const code = (err as { code?: string }).code;
@@ -245,95 +316,30 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
     }
   }
 
-  // ── Step 2: Verify OTP ────────────────────────────────────────────────────
-  async function handleVerifyOtp(e: React.FormEvent) {
+  function handleVerifySubmit(e: React.FormEvent) {
     e.preventDefault();
-    const code = otp.join("");
-    if (code.length !== 6) {
-      toast.error("Lütfen 6 haneli kodu girin.");
-      return;
-    }
-    if (!confirmationRef.current) {
-      toast.error("Oturum süresi doldu. Lütfen yeni kod isteyin.");
-      handleGoBackToPhone();
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const credential = await confirmationRef.current.confirm(code);
-      // Send the Firebase ID token — the backend verifies its signature and
-      // reads the phone number from the verified claims, so the client never
-      // asserts its own identity.
-      const idToken = await credential.user.getIdToken();
-
-      const res = await fetch("/api/customer/auth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ idToken }),
-      });
-
-      if (!res.ok) throw new Error("Backend auth failed");
-
-      const data = await res.json();
-      toast.success(
-        data.isNew
-          ? "Hoş geldiniz! Hesabınız oluşturuldu."
-          : "Tekrar hoş geldiniz!"
-      );
-      router.push("/customer/dashboard");
-      router.refresh();
-    } catch (err: unknown) {
-      console.error("[OTP verify error]", err);
-      const code = (err as { code?: string }).code;
-      if (code === "auth/invalid-verification-code") {
-        toast.error("Hatalı doğrulama kodu. Lütfen tekrar deneyin.");
-      } else if (code === "auth/code-expired" || code === "auth/session-expired") {
-        toast.error("Kodun süresi doldu. Lütfen yeni kod isteyin.");
-        // Full reset — destroy verifier so next send is clean
-        handleGoBackToPhone();
-      } else {
-        toast.error("Doğrulama başarısız. Lütfen tekrar deneyin.");
-      }
-    } finally {
-      setLoading(false);
-    }
+    void verifyCode(otp);
   }
 
-  // ── OTP input helpers ─────────────────────────────────────────────────────
-  function handleOtpChange(index: number, value: string) {
-    const digit = value.replace(/\D/g, "").slice(-1);
-    const next = [...otp];
-    next[index] = digit;
-    setOtp(next);
-    if (digit && index < 5) otpInputsRef.current[index + 1]?.focus();
+  /**
+   * One handler for typing, pasting and auto-fill: iOS delivers the whole
+   * 6-digit code in a single change event, so anything that is not a digit is
+   * stripped and the result is clamped to six characters.
+   */
+  function handleOtpChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const digits = e.target.value.replace(/\D/g, "").slice(0, OTP_LENGTH);
+    setOtp(digits);
+    // Editing after a failed attempt re-arms the auto-submit effect.
+    if (digits !== attemptedCodeRef.current) attemptedCodeRef.current = null;
   }
 
-  function handleOtpKeyDown(index: number, e: React.KeyboardEvent) {
-    if (e.key === "Backspace" && !otp[index] && index > 0) {
-      otpInputsRef.current[index - 1]?.focus();
-    }
-    if (e.key === "ArrowLeft" && index > 0) otpInputsRef.current[index - 1]?.focus();
-    if (e.key === "ArrowRight" && index < 5) otpInputsRef.current[index + 1]?.focus();
-  }
-
-  function handleOtpPaste(e: React.ClipboardEvent) {
-    e.preventDefault();
-    const pasted = e.clipboardData.getData("text").replace(/\D/g, "").slice(0, 6);
-    if (!pasted) return;
-    const next = ["", "", "", "", "", ""];
-    for (let i = 0; i < pasted.length; i++) next[i] = pasted[i];
-    setOtp(next);
-    otpInputsRef.current[Math.min(pasted.length, 5)]?.focus();
-  }
-
-  // Resend = go back to phone step with a clean slate
   function handleResend() {
     if (resendCountdown > 0) return;
     handleGoBackToPhone();
   }
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  const activeCell = Math.min(otp.length, OTP_LENGTH - 1);
+
   return (
     <div className="space-y-6">
       {/*
@@ -355,7 +361,6 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
       />
 
       {step === "phone" ? (
-        /* ── Step 1: Phone Input ─────────────────────────────────────── */
         <form onSubmit={handleSendOtp} className="space-y-5">
           <div className="space-y-2">
             <label
@@ -385,8 +390,10 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
               {/* Phone number */}
               <input
                 id="phone-input"
+                name="phone"
                 type="tel"
                 inputMode="tel"
+                autoComplete="tel-national"
                 required
                 autoFocus
                 value={phoneNumber}
@@ -422,11 +429,10 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
           </button>
         </form>
       ) : (
-        /* ── Step 2: OTP Verification ────────────────────────────────── */
-        <form onSubmit={handleVerifyOtp} className="space-y-6">
+        <form onSubmit={handleVerifySubmit} className="space-y-6">
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <label className="block text-sm font-medium text-green-100">
+              <label htmlFor="otp-input" className="block text-sm font-medium text-green-100">
                 Doğrulama Kodu
               </label>
               <button
@@ -439,36 +445,68 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
             </div>
 
             <p className="text-sm text-green-300/80">
-  <span className="font-semibold text-white">
-    {`${countryCode} ${phoneNumber}`}
-  </span>{" "}
-  numarasına gönderilen 6 haneli kodu girin.
-</p>
+              <span className="font-semibold text-white">
+                {`${countryCode} ${phoneNumber}`}
+              </span>{" "}
+              numarasına gönderilen 6 haneli kodu girin.
+            </p>
 
-            {/* 6-cell OTP input */}
-            <div className="flex gap-2 justify-center" onPaste={handleOtpPaste}>
-              {otp.map((digit, i) => (
-                <input
-                  key={i}
-                  ref={(el) => { otpInputsRef.current[i] = el; }}
-                  id={`otp-cell-${i}`}
-                  type="text"
-                  inputMode="numeric"
-                  maxLength={1}
-                  value={digit}
-                  onChange={(e) => handleOtpChange(i, e.target.value)}
-                  onKeyDown={(e) => handleOtpKeyDown(i, e)}
-                  className="w-11 h-14 text-center text-2xl font-bold rounded-xl bg-white/10 border border-white/30 text-white focus:outline-none focus:ring-2 focus:ring-green-400 focus:border-transparent transition-all caret-transparent"
-                  aria-label={`OTP hane ${i + 1}`}
-                />
-              ))}
+            {/*
+              ONE real input drives SIX painted cells.
+              iOS Safari and Chrome only offer the "From Messages" / SMS
+              suggestion for a single field carrying autocomplete="one-time-code"
+              and they paste all six digits in one change event — six separate
+              maxLength=1 cells break that entirely. The input is transparent and
+              stretched over the cells so it stays focusable, keyboard-navigable
+              and reachable by the autofill UI, while the cells below are purely
+              presentational (pointer-events-none).
+            */}
+            <div className="relative">
+              <input
+                id="otp-input"
+                ref={otpInputRef}
+                name="otp"
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                autoComplete="one-time-code"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                maxLength={OTP_LENGTH}
+                value={otp}
+                onChange={handleOtpChange}
+                onFocus={() => setOtpFocused(true)}
+                onBlur={() => setOtpFocused(false)}
+                disabled={loading}
+                aria-label="6 haneli doğrulama kodu"
+                className="absolute inset-0 z-10 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed"
+              />
+
+              <div className="flex gap-2 justify-center pointer-events-none" aria-hidden="true">
+                {Array.from({ length: OTP_LENGTH }).map((_, i) => {
+                  const isActive = otpFocused && i === activeCell && !loading;
+                  return (
+                    <div
+                      key={i}
+                      className={`w-11 h-14 flex items-center justify-center text-2xl font-bold rounded-xl bg-white/10 border text-white transition-all ${
+                        isActive
+                          ? "border-transparent ring-2 ring-green-400"
+                          : "border-white/30"
+                      }`}
+                    >
+                      {otp[i] ?? ""}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           </div>
 
           <button
             id="verify-otp-btn"
             type="submit"
-            disabled={loading || otp.join("").length !== 6}
+            disabled={loading || otp.length !== OTP_LENGTH}
             className="w-full py-3 px-6 rounded-xl bg-green-500 hover:bg-green-400 active:scale-[0.98] text-white font-semibold text-base shadow-lg shadow-green-900/40 transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2"
           >
             {loading ? (

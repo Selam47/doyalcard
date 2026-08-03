@@ -3,21 +3,18 @@
 import { useEffect, useState, useCallback } from "react";
 import { X, Share, PlusSquare } from "lucide-react";
 
-// Minimal shape of the `beforeinstallprompt` event — not yet part of the
-// standard DOM lib types.
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
 }
 
 const DISMISS_KEY = "doyalcard:install-prompt-dismissed-at";
-const DISMISS_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 gün
+const DISMISS_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 function isStandalone() {
   if (typeof window === "undefined") return false;
   return (
     window.matchMedia?.("(display-mode: standalone)").matches ||
-    // iOS Safari-specific flag
     (window.navigator as Navigator & { standalone?: boolean }).standalone === true
   );
 }
@@ -54,8 +51,6 @@ export function InstallPrompt() {
     if (isStandalone() || wasRecentlyDismissed()) return;
 
     if (isIos()) {
-      // Intentional pre-paint sync from an external signal (the user agent);
-      // the rule only flags the first call in the block.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setIos(true);
       setVisible(true);

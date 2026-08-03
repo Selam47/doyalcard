@@ -27,17 +27,12 @@ import { InstallPrompt } from "@/components/customer/InstallPrompt";
 import { generateQrDataUrl } from "@/lib/qr";
 import { getCampaignConfig } from "@/lib/campaign-rules.server";
 
-// Stamp progress depends on live campaign rules and order counts, and the page
-// output varies per viewer — never statically cache it.
 export const dynamic = "force-dynamic";
 
 interface Props {
   params: Promise<{ uuid: string }>;
 }
 
-// Deliberately static. The old implementation put the customer's real name in
-// the <title>, which leaked it to anyone who requested the URL — including
-// link-preview crawlers in group chats — before any authorization ran.
 export const metadata: Metadata = {
   title: "Sadakat Kartı — Ekrem Coşkun Döner",
   robots: { index: false, follow: false },
@@ -46,32 +41,22 @@ export const metadata: Metadata = {
 export default async function CardPage({ params }: Props) {
   const { uuid } = await params;
 
-  // ── Authorization ─────────────────────────────────────────────────────────
   const access = await resolveCardAccess(uuid);
 
   if (access.status === "unauthenticated") {
-    // No session of any kind. Customers sign in with their phone number; the
-    // customer login page carries a "Personel Girişi" link for staff.
     redirect("/customer/login");
   }
 
   if (access.status === "forbidden") {
-    // Signed-in customer following somebody else's QR — bounce them to their
-    // own card rather than confirming that the other card exists.
     redirect("/customer/dashboard");
   }
 
   if (access.status === "not-found") notFound();
 
-  // Only the customer row is read out. The viewer's staff principal is
-  // intentionally discarded here: nothing on this page may vary by role.
   const { customer } = access;
 
   const [qrDataUrl, campaign] = await Promise.all([
     generateQrDataUrl(uuid),
-    // Single source of truth: the active CampaignRule row decides how many
-    // stamp slots EVERY card shows — never the customer record, never a
-    // hardcoded limit.
     getCampaignConfig(),
   ]);
 

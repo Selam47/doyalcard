@@ -1,9 +1,3 @@
-// src/lib/istanbul-time.ts
-//
-// Türkiye has been on a permanent UTC+3 since 2016 — no DST, no transitions —
-// so a fixed offset is exact and needs no tz database. Both the analytics SQL
-// (which shifts `created_at` by the same interval before date_trunc) and the
-// UI's notion of "the current month" go through this one constant.
 export const ISTANBUL_OFFSET_HOURS = 3;
 
 const OFFSET_MS = ISTANBUL_OFFSET_HOURS * 60 * 60 * 1000;

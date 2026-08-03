@@ -1,4 +1,3 @@
-// src/app/staff/page.tsx
 import type { Metadata } from "next";
 import { QrScannerSection } from "@/components/staff/QrScannerSection";
 import { PhoneSearchSection } from "@/components/staff/PhoneSearchSection";
@@ -13,8 +12,6 @@ interface Props {
 }
 
 export default async function StaffPage({ searchParams }: Props) {
-  // Set by deleteCustomer()'s redirect. Read here on the server rather than
-  // with useSearchParams(), which would need a Suspense boundary.
   const { deleted } = await searchParams;
   const deletedName =
     typeof deleted === "string" && deleted.length > 0 ? deleted : null;
