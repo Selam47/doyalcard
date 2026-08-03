@@ -38,13 +38,35 @@ Two distinct routes render a stamp card. Never merge them.
 
 | Route | Who may open it | What it renders |
 | --- | --- | --- |
-| `/card/[uuid]` | The card's own customer (customer cookie must match) **or** active staff | Read-only card. **Zero** action buttons and **zero** links to `/staff/*` — the file does not import `StaffActionPanel`, `DeleteCustomerButton` or any mutation, and renders nothing that varies by role. |
+| `/card/[uuid]` | **Everyone. No login, no session, no cookie.** | Read-only card. **Zero** action buttons and **zero** links to `/staff/*` — the file does not import `StaffActionPanel`, `DeleteCustomerButton` or any mutation, and renders nothing that varies by viewer. |
 | `/staff/customer/[uuid]` | Active `STAFF` / `ADMIN` only | Read-only card **plus** the staff action panel (`+1 Sipariş`, `-1 Damga`, `Müşteriyi Sil`). |
 
-- The public `/card/[uuid]` route MUST NOT gain an action button **or a link to the staff terminal**, ever — not behind a role check, not for an `ADMIN`. A role check that decides whether to render controls or navigation is one bug away from rendering them; the guarantee here is structural — the page discards the staff principal entirely (`const { customer } = access`) and nothing it renders varies by viewer. `/card/[uuid]` is where a raw native-camera scan lands, and it is a read-only dead end for every device.
+#### `/card/[uuid]` is public on purpose — do not gate it
+
+This route is **intentionally outside the app's auth/session system**. A customer points a raw phone camera at the QR printed on their card; the camera opens a **fresh, cookie-less tab** straight at this URL and must render the card immediately. Any login requirement breaks the single flow the product exists for.
+
+Concretely, three things must stay true together — fixing one without the others reintroduces the bug:
+
+1. **`src/app/card/[uuid]/page.tsx` reads no session.** No `auth()`, no `getStaffPrincipal()`, no `getCustomerSession()`. The only non-render exit is `notFound()` for a UUID that matches no customer. There is no `redirect()` in the file.
+2. **`src/middleware.ts` lets it through untouched** — `/card` is in `CUSTOMER_PAGE_PREFIXES` and returns `NextResponse.next()` *before* the session is consulted.
+3. **`src/components/auth/TabSessionGuard.tsx` treats `/card` as public** — it is in `PUBLIC_PREFIXES`, not `CUSTOMER_PREFIXES`. A raw scan is *always* a "fresh tab", so guarding it there would bounce every scan to `/customer/login`, and the reset call would silently drop the scanner's own session (this is exactly how the cashier-logged-out-mid-shift bug happened). On `/card` the guard skips the `/api/session/reset` call entirely and never redirects.
+
+**Auth work on other flows must not spread here.** Staff/admin layout guards, customer OTP login, tab-session invalidation and session-cookie rotation are all deliberately scoped away from `/card`. If a future "auth fix" adds a session read, a role branch or a redirect to any of the three files above, that is a regression, not a hardening.
+
+#### What actually protects the card
+
+Not authentication — **shape**:
+
+- `Customer.qrUuid` is a v4 UUID (122 bits) and is **never** enumerated, listed, searched or range-queried. No route returns more than the single card the caller already named. `resolvePublicCardAccess()` shape-checks the UUID before touching the database.
+- **`CARD_SELECT` in `src/lib/card-access.ts` is the privacy boundary.** It is a fixed, narrow projection and must never grow to include a raw phone number, email, address or extra internal id. `CustomerCardView` masks the phone at render time. Widening this select widens what a photographed QR code discloses.
+- Read access confers nothing, because the page renders no mutation.
+
+#### Remaining invariants
+
+- `/card/[uuid]` MUST NOT gain an action button **or a link to the staff terminal**, ever — not behind a role check, not for an `ADMIN`. A role check that decides whether to render controls is one bug away from rendering them; the guarantee is structural — the page never learns who is looking, so nothing it renders can vary by viewer.
 - Staff reach the till by signing into the staff portal and scanning with the **in-app scanner** (`src/components/staff/QrScannerSection.tsx`), which decodes `/card/<uuid>` and routes to `/staff/customer/<uuid>` itself. That is the only navigation path into the action surface.
-- Anonymous visitors are rejected **before** the customer row is fetched, so the route cannot be used to probe which UUIDs exist. Read authorization lives in `src/lib/card-access.ts` (`resolveCardAccess` / `resolveStaffCardAccess`), which is a plain `server-only` module — deliberately NOT `"use server"`, because every export of a `"use server"` file is a publicly callable endpoint.
-- The customer's QR still encodes `/card/<uuid>` (that is what the customer's own phone opens). The staff scanner rewrites it to `/staff/customer/<uuid>` after decoding.
+- The two loaders live in `src/lib/card-access.ts` — `resolvePublicCardAccess` (no session, `/card`) and `resolveStaffCardAccess` (active staff required, `/staff/customer`). Keep them separate; a customer session must never satisfy the staff one. The module is a plain `server-only` file, deliberately NOT `"use server"`, because every export of a `"use server"` file is a publicly callable endpoint.
+- The customer's QR encodes `/card/<uuid>` (that is what the customer's own phone opens). The staff scanner rewrites it to `/staff/customer/<uuid>` after decoding.
 
 ### 3a. Role Checks Must Hit the Database
 

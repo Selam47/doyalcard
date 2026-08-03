@@ -1,27 +1,40 @@
 // src/app/card/[uuid]/page.tsx
 //
-// PUBLIC-FACING CARD — STRICTLY READ-ONLY.
+// PUBLIC-FACING CARD — NO LOGIN, STRICTLY READ-ONLY.
 //
-// This route renders a stamp card and nothing else. It has NO import of
-// StaffActionPanel, DeleteCustomerButton or any mutation, so no combination of
-// session, role, cookie or crafted URL can make an action button appear here.
-// That is the point: "+1 Sipariş", "-1 Damga" and "Müşteriyi Sil" live on
-// /staff/customer/[uuid], behind the middleware-protected /staff prefix.
+// This route is PUBLIC on purpose and must stay that way. A customer points a
+// raw phone camera at the QR code on their own card; the camera opens a fresh,
+// cookie-less tab straight at this URL. If this page requires a session, that
+// scan lands on a login screen and the core flow of the product is broken.
+// So: NO auth() call, NO getStaffPrincipal(), NO customer-session read, and no
+// redirect to /login or /customer/login anywhere below. The only exit other
+// than rendering is notFound(), for a UUID that matches no customer.
 //
-// It also renders NO navigation toward the staff terminal — not even for an
-// authenticated ADMIN. A raw QR scan from a native camera app lands here and
-// must be a dead end for everyone, so there is deliberately no link, no
-// redirect and no role-conditional branch pointing at /staff/*. Staff reach
-// the till by signing into the staff portal and using the in-app scanner
-// (/staff), which rewrites the decoded URL to /staff/customer/<uuid> itself.
+// It is also OUTSIDE the app's session machinery by design. Middleware lets
+// /card through before it consults a session (CUSTOMER_PAGE_PREFIXES), and
+// TabSessionGuard deliberately does not list /card among its protected
+// prefixes — a raw scan is always a "fresh tab", so guarding it there would
+// bounce every single scan to login. Auth fixes for the staff/admin layouts,
+// customer OTP login or tab-session invalidation must not be extended here.
 //
-// Read access itself is gated too — see src/lib/card-access.ts. A card is
-// KVKK personal data, so knowing the UUID is not enough: the viewer must be
-// the customer who owns it, or active staff.
+// STRICTLY READ-ONLY: there is NO import of StaffActionPanel,
+// DeleteCustomerButton or any Server Action, so no combination of session,
+// role, cookie or crafted URL can make a mutating control appear. "+1 Sipariş",
+// "-1 Damga" and "Müşteriyi Sil" live only on /staff/customer/[uuid], behind
+// the middleware-protected /staff prefix.
+//
+// It renders NO navigation toward the staff terminal either — not even for an
+// authenticated ADMIN. Nothing here varies by viewer; the page never learns who
+// is looking. Staff reach the till by signing into the staff portal and using
+// the in-app scanner (/staff), which rewrites the decoded URL to
+// /staff/customer/<uuid> itself.
+//
+// The UUID is the credential: v4, unguessable, never listed or searchable, and
+// the projection in card-access.ts is the privacy boundary — do not widen it.
 import type { Metadata } from "next";
 
-import { notFound, redirect } from "next/navigation";
-import { resolveCardAccess } from "@/lib/card-access";
+import { notFound } from "next/navigation";
+import { resolvePublicCardAccess } from "@/lib/card-access";
 import { CustomerCardView } from "@/components/stamp-card/CustomerCardView";
 import { InstallPrompt } from "@/components/customer/InstallPrompt";
 import { generateQrDataUrl } from "@/lib/qr";
@@ -41,16 +54,9 @@ export const metadata: Metadata = {
 export default async function CardPage({ params }: Props) {
   const { uuid } = await params;
 
-  const access = await resolveCardAccess(uuid);
-
-  if (access.status === "unauthenticated") {
-    const loginUrl = new URLSearchParams({ callbackUrl: `/card/${uuid}` });
-    redirect(`/customer/login?${loginUrl.toString()}`);
-  }
-
-  if (access.status === "forbidden") {
-    redirect("/customer/dashboard");
-  }
+  // No session is read here, by design. The only failure mode is "this UUID
+  // is not a card" — never "you are not allowed to see this card".
+  const access = await resolvePublicCardAccess(uuid);
 
   if (access.status === "not-found") notFound();
 
