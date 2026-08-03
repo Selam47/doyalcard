@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 
 import Link from "next/link";
 import { getCustomerSession } from "@/lib/customer-session";
+import { prisma } from "@/lib/prisma";
+import { maskPhone } from "@/lib/utils";
 import { CustomerPhoneLoginForm } from "@/components/customer/CustomerPhoneLoginForm";
 
 export const metadata: Metadata = {
@@ -34,6 +36,37 @@ function getSafeDestination(value: string | string[] | undefined): string {
   }
 }
 
+/**
+ * Who, if anyone, is this browser already signed in as?
+ *
+ * Returned so the page can NAME them instead of silently acting on their
+ * behalf. The projection is deliberately just enough to identify the account
+ * to its owner — the phone is masked before it reaches the client.
+ */
+async function getExistingIdentity(
+  customerId: string,
+  sessionPhone: string
+): Promise<{ name: string; maskedPhone: string } | null> {
+  try {
+    const customer = await prisma.customer.findUnique({
+      where: { id: customerId },
+      select: { name: true, phone: true },
+    });
+
+    // Same session/record cross-check the dashboard applies. A session that no
+    // longer agrees with its row is not an identity worth offering.
+    if (!customer || customer.phone !== sessionPhone) return null;
+
+    return {
+      name: customer.name === "Müşteri" ? "Sadakat Kartım" : customer.name,
+      maskedPhone: maskPhone(customer.phone),
+    };
+  } catch (error) {
+    console.error("[customer/login] existing identity lookup failed:", error);
+    return null;
+  }
+}
+
 export default async function CustomerLoginPage({
   searchParams,
 }: CustomerLoginPageProps) {
@@ -41,9 +74,26 @@ export default async function CustomerLoginPage({
     getCustomerSession(),
     searchParams,
   ]);
-  const alreadyLoggedIn = Boolean(session);
   const redirectTo = getSafeDestination(params.callbackUrl);
   const returningToCard = redirectTo.startsWith("/card/");
+
+  /*
+   * A LIVE SESSION NO LONGER REDIRECTS ON ITS OWN.
+   *
+   * This page used to hand the client `alreadyLoggedIn` and have it fire
+   * `router.replace(redirectTo)` from an effect. On a device where somebody
+   * else had signed in earlier — the owner testing a second number, a shared
+   * counter phone, a family handset — the session cookie outlives the visit
+   * (it is a session cookie, and a mobile browser is essentially never fully
+   * closed). Anyone opening the login page was then thrown straight onto THAT
+   * person's dashboard, complete with their name, masked number, stamp count
+   * and QR code, without entering a phone number or an OTP. Arriving here is a
+   * statement of intent to sign in, so the previous occupant is now shown by
+   * name and the visitor chooses explicitly.
+   */
+  const existingIdentity = session
+    ? await getExistingIdentity(session.customerId, session.phone)
+    : null;
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-green-950 via-green-900 to-emerald-800 p-4">
@@ -78,7 +128,7 @@ export default async function CustomerLoginPage({
           </div>
 
           <CustomerPhoneLoginForm
-            alreadyLoggedIn={alreadyLoggedIn}
+            existingIdentity={existingIdentity}
             redirectTo={redirectTo}
           />
         </div>

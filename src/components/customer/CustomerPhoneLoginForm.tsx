@@ -72,25 +72,62 @@ function withTimeout<T>(promise: Promise<T>): Promise<T> {
  */
 type Step = "phone" | "otp" | "consent";
 
+interface ExistingIdentity {
+  name: string;
+  maskedPhone: string;
+}
+
 interface CustomerPhoneLoginFormProps {
-  /** True when a valid customer session cookie already exists server-side. */
-  alreadyLoggedIn?: boolean;
+  /**
+   * The account this browser is ALREADY signed in as, if any — resolved and
+   * masked server-side. Never acted upon automatically; see the identity gate
+   * below.
+   */
+  existingIdentity?: ExistingIdentity | null;
   /** Validated server-side destination, usually the card URL that was scanned. */
   redirectTo?: string;
 }
 
 export function CustomerPhoneLoginForm({
-  alreadyLoggedIn = false,
+  existingIdentity = null,
   redirectTo = "/customer/dashboard",
 }: CustomerPhoneLoginFormProps) {
   const router = useRouter();
 
-  useEffect(() => {
-    if (!alreadyLoggedIn) return;
-    const [entry] = performance.getEntriesByType("navigation") as PerformanceNavigationTiming[];
-    if (entry?.type === "back_forward") return;
-    router.replace(redirectTo);
-  }, [alreadyLoggedIn, redirectTo, router]);
+  /*
+   * The identity gate.
+   *
+   * There is deliberately NO effect here that navigates on the strength of an
+   * existing session. The previous version did exactly that, and it is how a
+   * visitor could land on a stranger's stamp card without authenticating: the
+   * cookie left behind by whoever used the device last was treated as this
+   * visitor's identity. A session is now an OFFER the user accepts or rejects
+   * by name, and rejecting it destroys it before any new sign-in begins.
+   */
+  const [identityOffer, setIdentityOffer] = useState<ExistingIdentity | null>(
+    existingIdentity
+  );
+  const [switchingAccount, setSwitchingAccount] = useState(false);
+
+  function handleContinueAsExisting() {
+    router.push(redirectTo);
+    router.refresh();
+  }
+
+  async function handleUseDifferentNumber() {
+    setSwitchingAccount(true);
+    try {
+      // Drop the previous occupant's session server-side BEFORE collecting a
+      // new number, so an abandoned sign-in cannot leave it live and reusable.
+      await fetch("/api/customer/logout", { method: "POST" });
+    } catch {
+      // Even if the call fails the new login overwrites the cookie; carry on.
+    } finally {
+      setIdentityOffer(null);
+      setSwitchingAccount(false);
+      router.refresh();
+    }
+  }
 
   const [step, setStep] = useState<Step>("phone");
   const [countryCode, setCountryCode] = useState("+90");
@@ -744,7 +781,58 @@ export function CustomerPhoneLoginForm({
         style={{ position: "fixed", top: "-9999px", left: "-9999px" }}
       />
 
-      {step === "phone" ? (
+      {identityOffer ? (
+        /*
+          Someone is already signed in on this browser. Name them and let the
+          visitor decide — never assume the session belongs to whoever is
+          holding the phone right now.
+        */
+        <div className="space-y-5">
+          <div className="rounded-xl bg-white/10 border border-white/20 p-4 space-y-1">
+            <p className="text-xs text-green-300/80">
+              Bu cihazda zaten açık bir oturum var:
+            </p>
+            <p className="text-white font-semibold text-base">
+              {identityOffer.name}
+            </p>
+            <p className="text-green-400 text-xs">{identityOffer.maskedPhone}</p>
+          </div>
+
+          <p className="text-sm text-green-300/80">
+            Bu hesap size ait değilse{" "}
+            <span className="text-white font-medium">
+              &quot;Farklı numarayla giriş yap&quot;
+            </span>{" "}
+            seçeneğini kullanın.
+          </p>
+
+          <button
+            id="continue-as-existing-btn"
+            type="button"
+            onClick={handleContinueAsExisting}
+            className="w-full py-3 px-6 rounded-xl bg-green-500 hover:bg-green-400 active:scale-[0.98] text-white font-semibold text-base shadow-lg shadow-green-900/40 transition-all duration-200"
+          >
+            {identityOffer.name} olarak devam et
+          </button>
+
+          <button
+            id="use-different-number-btn"
+            type="button"
+            onClick={handleUseDifferentNumber}
+            disabled={switchingAccount}
+            className="w-full py-3 px-6 rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 text-white font-medium text-sm transition-all disabled:opacity-60 flex items-center justify-center gap-2"
+          >
+            {switchingAccount ? (
+              <>
+                <span className="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full" />
+                Oturum kapatılıyor...
+              </>
+            ) : (
+              "Farklı numarayla giriş yap"
+            )}
+          </button>
+        </div>
+      ) : step === "phone" ? (
         <form onSubmit={handleSendOtp} className="space-y-5">
           <div className="space-y-2">
             <label

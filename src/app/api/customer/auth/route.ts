@@ -11,8 +11,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 
 import { prisma } from "@/lib/prisma";
-import { setCustomerSession } from "@/lib/customer-session";
-import { isValidE164, sanitizePhoneInput } from "@/lib/phone";
+import {
+  revokeCurrentCustomerSession,
+  setCustomerSession,
+} from "@/lib/customer-session";
+import { isValidE164, normalizePhoneToE164 } from "@/lib/phone";
 import { isDbConnectionError } from "@/lib/db-errors";
 
 const FIREBASE_JWKS = createRemoteJWKSet(
@@ -78,7 +81,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const normalised = sanitizePhoneInput(phoneClaim);
+  const normalised = normalizePhoneToE164(phoneClaim) ?? "";
   if (!isValidE164(normalised)) {
     return NextResponse.json(
       { error: "Doğrulanan hesapta geçerli bir telefon numarası bulunamadı." },
@@ -144,6 +147,27 @@ export async function POST(req: NextRequest) {
         update: { kvkkConsent: true, kvkkConsentAt: consentedAt },
         select: { id: true, phone: true, kvkkConsent: true },
       });
+    }
+
+    /*
+     * Kill whatever session this browser was already carrying BEFORE minting
+     * the new one.
+     *
+     * A verified OTP is the strongest identity signal the system has, so the
+     * person who just proved they own this number must end up as the ONLY
+     * identity attached to this browser. Without this, the previous occupant's
+     * token stayed live: on a shared counter phone (or the owner's own device
+     * used to test several numbers) it remained a valid credential that could
+     * still be replayed, and any copy of it kept working for its full TTL.
+     *
+     * Revoking is deliberately best-effort — a failure here must not cost the
+     * customer the login they just completed, and `setCustomerSession` below
+     * overwrites the cookie regardless.
+     */
+    try {
+      await revokeCurrentCustomerSession();
+    } catch (error) {
+      console.error("[customer/auth] previous session revoke failed:", error);
     }
 
     await setCustomerSession(customer.id, customer.phone);

@@ -27,7 +27,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 
 import { SignJWT, jwtVerify } from "jose";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@/generated/prisma/client";
@@ -152,6 +152,59 @@ async function isRevoked(jti: string): Promise<boolean> {
 }
 
 /**
+ * Is the browser sending MORE THAN ONE `customer_session` cookie?
+ *
+ * This has to be answered from the raw `Cookie` header, because `cookies()`
+ * cannot answer it: given
+ *
+ *     Cookie: customer_session=<A>; customer_session=<B>
+ *
+ * `cookies().get()` returns <B> and `cookies().getAll()` reports a SINGLE
+ * entry. The other identity is not flagged, not logged — it is simply gone.
+ * Which of the two survives is decided by header order, i.e. by the browser's
+ * RFC 6265 sort (longest Path first, then oldest first), not by which one this
+ * app most recently issued.
+ *
+ * Duplicates arise whenever the same name is stored under a second Path or
+ * Domain — a deploy that changed the cookie's scope, an apex/`www` split, or a
+ * preview domain sharing a parent. The result is a session that silently
+ * resolves to WHOEVER used the browser before, which is exactly the class of
+ * bug where a customer signs in and is shown a stranger's stamp card.
+ *
+ * So: two different values for this name means the request is ambiguous, and
+ * an ambiguous identity is treated as no identity. Duplicates that all carry
+ * the SAME value are harmless and pass through.
+ */
+async function hasConflictingSessionCookies(): Promise<boolean> {
+  try {
+    const headerStore = await headers();
+    const raw = headerStore.get("cookie");
+    if (!raw) return false;
+
+    const values = new Set<string>();
+    for (const part of raw.split(";")) {
+      const separator = part.indexOf("=");
+      if (separator === -1) continue;
+      if (part.slice(0, separator).trim() !== COOKIE_NAME) continue;
+      values.add(part.slice(separator + 1).trim());
+    }
+
+    if (values.size <= 1) return false;
+
+    console.error(
+      `[customer-session] ${values.size} farklı '${COOKIE_NAME}' cookie'si ` +
+        "aynı istekte geldi. Hangisinin gerçek olduğu belirlenemez, oturum " +
+        "reddediliyor. Sebep genellikle farklı Path/Domain ile yazılmış eski " +
+        "bir cookie'dir; müşteri yeniden giriş yaptığında düzelir."
+    );
+    return true;
+  } catch {
+    // headers() unavailable in this context — fall back to the cookie store.
+    return false;
+  }
+}
+
+/**
  * Read & verify the session cookie. Returns null if missing, invalid, expired
  * or revoked.
  *
@@ -165,6 +218,9 @@ export async function getCustomerSession(): Promise<CustomerSessionPayload | nul
     const cookieStore = await cookies();
     const token = cookieStore.get(COOKIE_NAME)?.value;
     if (!token) return null;
+
+    // Ambiguous identity → no identity. Checked before the token is trusted.
+    if (await hasConflictingSessionCookies()) return null;
 
     const { payload } = await jwtVerify(token, getSecret());
 

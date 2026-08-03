@@ -6,7 +6,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { Prisma } from "@/generated/prisma/client";
 import { z } from "zod";
-import { isValidE164, sanitizePhoneInput } from "@/lib/phone";
+import { isValidE164, normalizePhoneToE164 } from "@/lib/phone";
 import { isDbConnectionError } from "@/lib/db-errors";
 import { getCustomerSession } from "@/lib/customer-session";
 import { revalidateStampSurfaces } from "@/lib/revalidate";
@@ -59,11 +59,20 @@ export async function registerCustomer(
 
     const { name, phone } = parsed.data;
 
-    const normalizedPhone = sanitizePhoneInput(phone);
-    if (!isValidE164(normalizedPhone)) {
+    /*
+     * Same normalizer the customer's own OTP login uses. Registration used to
+     * call `sanitizePhoneInput`, which returns the number exactly as typed —
+     * so a cashier entering "0530 916 28 63" stored "05309162863" while the
+     * same person logging in by SMS stored "+905309162863". Two spellings of
+     * one human means the UNIQUE index never fires, the OTP callback cannot
+     * find the staff-created row, and a phone search matches whichever one it
+     * happens to hit.
+     */
+    const normalizedPhone = normalizePhoneToE164(phone);
+    if (!normalizedPhone || !isValidE164(normalizedPhone)) {
       return {
         success: false,
-        error: "Telefon numarası ülke koduyla birlikte girilmeli (örn: +905551234567)",
+        error: "Geçerli bir telefon numarası girin (örn: 0530 123 45 67 veya +905301234567)",
       };
     }
 
@@ -217,26 +226,32 @@ export async function deleteCustomer(
 }
 
 /**
- * Search customers by phone number (Staff/Admin only)
- * Supports partial matching for flexible search
+ * Look a customer up by phone number (Staff/Admin only).
+ *
+ * EXACT match on the normalized E.164 number — never a partial one.
+ *
+ * This used to be `findFirst({ where: { phone: { contains: normalized } } })`,
+ * which is how a search could quietly hand back the WRONG PERSON: "530" (or
+ * any fragment two customers share) matched several rows and `findFirst`
+ * returned whichever one Postgres happened to yield, with no ordering and no
+ * hint to the cashier that the match was ambiguous. Stamping the card that came
+ * back then credited a stranger's account.
+ *
+ * `phone` is UNIQUE, so normalizing the input first and asking for that one row
+ * makes the result provably the number that was typed, or nothing at all.
  */
 export async function searchCustomerByPhone(phone: string) {
   const guard = await authorizeStaff();
   if (!guard.ok) return null;
 
-  if (!phone || typeof phone !== "string" || phone.trim().length < 3) {
-    return null;
-  }
+  if (!phone || typeof phone !== "string") return null;
+
+  const normalized = normalizePhoneToE164(phone);
+  if (!normalized) return null;
 
   try {
-    const normalized = phone.replace(/[\s()-]/g, "");
-
-    const customer = await prisma.customer.findFirst({
-      where: {
-        phone: {
-          contains: normalized,
-        },
-      },
+    const customer = await prisma.customer.findUnique({
+      where: { phone: normalized },
       select: {
         id: true,
         name: true,
@@ -294,6 +309,30 @@ export async function getCustomerById(id: string) {
         },
       },
     });
+
+    if (!customer) return null;
+
+    /*
+     * Cross-check the row against the OTHER claim in the session.
+     *
+     * The token carries both `customerId` and the phone number that Firebase
+     * actually verified, and they were written together at login. If the row
+     * behind that id no longer carries that number, the two disagree — the
+     * session belongs to somebody else, or the record was re-keyed underneath
+     * it. Either way the honest answer is "no customer", not a card belonging
+     * to whoever now owns the id.
+     *
+     * This is the invariant that makes a wrong-identity render impossible
+     * rather than merely unlikely: the dashboard cannot paint a name unless
+     * the phone that passed OTP still matches the row being painted.
+     */
+    if (customer.phone !== session.phone) {
+      console.error(
+        "[getCustomerById] session/record mismatch — oturum reddedildi. " +
+          `customerId=${id} oturumdaki telefon ile kayıttaki telefon farklı.`
+      );
+      return null;
+    }
 
     return customer;
   } catch (error) {
