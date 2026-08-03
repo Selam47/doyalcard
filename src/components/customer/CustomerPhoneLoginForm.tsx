@@ -42,7 +42,15 @@ const COUNTRY_CODES = [
 
 const OTP_LENGTH = 6;
 
-type Step = "phone" | "otp";
+/**
+ * "phone" → "otp" → (only when the backend asks for it) "consent".
+ *
+ * The consent step exists because /api/customer/auth refuses to CREATE a
+ * Customer row until KVKK consent has been given explicitly, mirroring the
+ * z.refine on the staff-side registerCustomer action. It is reached only on a
+ * 428 response, so a returning, already-consented customer never sees it.
+ */
+type Step = "phone" | "otp" | "consent";
 
 interface CustomerPhoneLoginFormProps {
   /** True when a valid customer session cookie already exists server-side. */
@@ -67,8 +75,16 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
   const [otpFocused, setOtpFocused] = useState(false);
   const [loading, setLoading] = useState(false);
   const [resendCountdown, setResendCountdown] = useState(0);
+  const [kvkkChecked, setKvkkChecked] = useState(false);
 
   const confirmationRef = useRef<ConfirmationResult | null>(null);
+  /**
+   * The already-verified Firebase ID token, kept so the consent step can retry
+   * /api/customer/auth without re-sending an SMS. Held in a ref, never in
+   * state: it must not end up in a render-triggered log or a React DevTools
+   * tree any longer than necessary, and it is cleared as soon as it is spent.
+   */
+  const idTokenRef = useRef<string | null>(null);
   const recaptchaVerifierRef = useRef<RecaptchaVerifier | null>(null);
   const recaptchaContainerRef = useRef<HTMLDivElement | null>(null);
   const otpInputRef = useRef<HTMLInputElement | null>(null);
@@ -81,6 +97,42 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
   const verifyingRef = useRef(false);
   /** The last code we already sent to confirm() — never re-submit it unchanged. */
   const attemptedCodeRef = useRef<string | null>(null);
+  /**
+   * Mirror of `otp` readable from timers/native listeners without re-subscribing
+   * them on every keystroke. Written by applyOtpValue, never read during render.
+   */
+  const otpRef = useRef("");
+
+  /**
+   * THE single place where the OTP value is written, no matter which path
+   * delivered it: React onChange, a native `change`/`input` event, the WebOTP
+   * credential, or the DOM-value poll below.
+   *
+   * Why this is not just `setOtp(e.target.value)`:
+   * React's `onChange` is really the `input` event. Several mobile auto-fill
+   * paths (the iOS "From Messages" keyboard suggestion, some Android IMEs and
+   * password managers) write `input.value` and either dispatch only a native
+   * `change` event or dispatch nothing at all. React state then stays "" while
+   * the field visibly shows six digits, the submit button stays disabled and the
+   * form looks stuck — which is exactly the reported bug. Every ingress point is
+   * therefore funnelled through here, and the DOM is pushed back into sync so a
+   * value that arrived outside React cannot drift away from state.
+   */
+  const applyOtpValue = useCallback((raw: string): string => {
+    const digits = raw.replace(/\D/g, "").slice(0, OTP_LENGTH);
+
+    // Re-arm the auto-submit guard whenever the code actually changes, so a
+    // corrected code after a failed attempt submits without an extra tap.
+    if (digits !== attemptedCodeRef.current) attemptedCodeRef.current = null;
+
+    otpRef.current = digits;
+    setOtp((prev) => (prev === digits ? prev : digits));
+
+    const el = otpInputRef.current;
+    if (el && el.value !== digits) el.value = digits;
+
+    return digits;
+  }, []);
 
   const destroyRecaptcha = useCallback(() => {
     if (recaptchaVerifierRef.current) {
@@ -152,14 +204,62 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
   const handleGoBackToPhone = useCallback(() => {
     destroyRecaptcha();
     confirmationRef.current = null;
+    idTokenRef.current = null;
     if (countdownRef.current) clearInterval(countdownRef.current);
     countdownRef.current = null;
     verifyingRef.current = false;
     attemptedCodeRef.current = null;
     setResendCountdown(0);
+    setKvkkChecked(false);
     setStep("phone");
-    setOtp("");
-  }, [destroyRecaptcha]);
+    applyOtpValue("");
+  }, [destroyRecaptcha, applyOtpValue]);
+
+  /**
+   * Exchange the verified Firebase ID token for the server session cookie.
+   *
+   * Returns `"consent-required"` when the backend answers 428, meaning it has
+   * verified the phone number but will not create (or unlock) the Customer row
+   * until KVKK consent is sent. Nothing is written server-side in that case —
+   * no row, no cookie — so abandoning the flow here leaves no trace.
+   */
+  const submitSession = useCallback(
+    async (
+      idToken: string,
+      consent: boolean
+    ): Promise<"ok" | "consent-required"> => {
+      const res = await fetch("/api/customer/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          consent ? { idToken, kvkkConsent: true } : { idToken }
+        ),
+      });
+
+      const data = (await res.json().catch(() => ({}))) as {
+        isNew?: boolean;
+        requiresConsent?: boolean;
+        error?: string;
+      };
+
+      if (res.status === 428 && data.requiresConsent) {
+        return "consent-required";
+      }
+
+      if (!res.ok) throw new Error(data.error ?? "Backend auth failed");
+
+      toast.success(
+        data.isNew
+          ? "Hoş geldiniz! Hesabınız oluşturuldu."
+          : "Tekrar hoş geldiniz!"
+      );
+      idTokenRef.current = null;
+      router.push("/customer/dashboard");
+      router.refresh();
+      return "ok";
+    },
+    [router]
+  );
 
   /**
    * Single entry point for verification. Called by the submit button, by the
@@ -188,30 +288,22 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
       try {
         const credential = await confirmationRef.current.confirm(code);
         const idToken = await credential.user.getIdToken();
+        idTokenRef.current = idToken;
 
-        const res = await fetch("/api/customer/auth", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ idToken }),
-        });
+        const outcome = await submitSession(idToken, false);
 
-        if (!res.ok) throw new Error("Backend auth failed");
-
-        const data = await res.json();
-        toast.success(
-          data.isNew
-            ? "Hoş geldiniz! Hesabınız oluşturuldu."
-            : "Tekrar hoş geldiniz!"
-        );
-        router.push("/customer/dashboard");
-        router.refresh();
+        if (outcome === "consent-required") {
+          // Phone verified, but no Customer row exists (or the existing one
+          // predates the consent requirement). Ask before anything is stored.
+          setKvkkChecked(false);
+          setStep("consent");
+        }
       } catch (err: unknown) {
         console.error("[OTP verify error]", err);
         const errCode = (err as { code?: string }).code;
         if (errCode === "auth/invalid-verification-code") {
           toast.error("Hatalı doğrulama kodu. Lütfen tekrar deneyin.");
-          setOtp("");
-          attemptedCodeRef.current = null;
+          applyOtpValue("");
           setTimeout(() => otpInputRef.current?.focus(), 50);
         } else if (errCode === "auth/code-expired" || errCode === "auth/session-expired") {
           toast.error("Kodun süresi doldu. Lütfen yeni kod isteyin.");
@@ -224,8 +316,40 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
         setLoading(false);
       }
     },
-    [handleGoBackToPhone, router]
+    [handleGoBackToPhone, applyOtpValue, submitSession]
   );
+
+  /** Consent step submit — the only place `kvkkConsent: true` is ever sent. */
+  async function handleConsentSubmit(e: React.FormEvent) {
+    e.preventDefault();
+
+    if (!kvkkChecked) {
+      toast.error("Devam etmek için KVKK aydınlatma metnini onaylamalısınız.");
+      return;
+    }
+
+    const idToken = idTokenRef.current;
+    if (!idToken) {
+      toast.error("Oturum süresi doldu. Lütfen tekrar giriş yapın.");
+      handleGoBackToPhone();
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const outcome = await submitSession(idToken, true);
+      if (outcome === "consent-required") {
+        // Should not happen: we just sent consent. Treat as a stale token.
+        toast.error("Onay kaydedilemedi. Lütfen tekrar giriş yapın.");
+        handleGoBackToPhone();
+      }
+    } catch (err) {
+      console.error("[KVKK consent submit]", err);
+      toast.error("Kayıt tamamlanamadı. Lütfen tekrar deneyin.");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   /**
    * WebOTP API fallback (Chrome/Android). iOS Safari has no WebOTP — it relies
@@ -246,9 +370,15 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
     navigator.credentials
       .get({ otp: { transport: ["sms"] }, signal: controller.signal })
       .then((credential) => {
-        const received = (credential as OTPCredential | null)?.code;
-        const digits = received?.replace(/\D/g, "").slice(0, OTP_LENGTH) ?? "";
-        if (digits.length === OTP_LENGTH) setOtp(digits);
+        const received = (credential as OTPCredential | null)?.code ?? "";
+        // Write through applyOtpValue so state AND the DOM input are both
+        // updated — the painted cells and the submit button read state, while
+        // any later native event reads the input's own value.
+        const digits = applyOtpValue(received);
+        // Verify straight away instead of waiting for the effect below: the
+        // synchronous guards inside verifyCode already de-duplicate, and this
+        // removes one render round-trip from the happy path.
+        if (digits.length === OTP_LENGTH) void verifyCode(digits);
       })
       .catch(() => {
         // AbortError on unmount/step change, or the user dismissed the prompt.
@@ -256,16 +386,66 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
 
     // Aborting is required — a pending WebOTP request otherwise outlives the step.
     return () => controller.abort();
-  }, [step]);
+  }, [step, applyOtpValue, verifyCode]);
 
-  /** Auto-confirm as soon as six digits land, whatever filled them. */
+  /**
+   * Native-event bridge for auto-fill paths React does not see.
+   *
+   * React's synthetic `onChange` is wired to the `input` event only. Mobile
+   * auto-fill (notably iOS "From Messages" and several Android IMEs) can commit
+   * the value with a bare `change` event, which React would drop on the floor.
+   * Listening to the real events on the real node closes that gap.
+   */
+  useEffect(() => {
+    if (step !== "otp") return;
+    const el = otpInputRef.current;
+    if (!el) return;
+
+    const sync = () => applyOtpValue(el.value);
+    el.addEventListener("input", sync);
+    el.addEventListener("change", sync);
+
+    return () => {
+      el.removeEventListener("input", sync);
+      el.removeEventListener("change", sync);
+    };
+  }, [step, applyOtpValue]);
+
+  /**
+   * Last-resort poll for auto-fill that dispatches NO event at all (some WebView
+   * and password-manager implementations simply assign `input.value`). Cheap,
+   * scoped to the OTP step only, and stops as soon as the step changes. Without
+   * it the field can visibly hold six digits while React state is still empty —
+   * the "stuck form" symptom.
+   */
+  useEffect(() => {
+    if (step !== "otp") return;
+
+    const id = setInterval(() => {
+      const el = otpInputRef.current;
+      if (!el || verifyingRef.current) return;
+      const digits = el.value.replace(/\D/g, "").slice(0, OTP_LENGTH);
+      if (digits !== otpRef.current) applyOtpValue(digits);
+    }, 200);
+
+    return () => clearInterval(id);
+  }, [step, applyOtpValue]);
+
+  /**
+   * Auto-confirm as soon as six digits land, whatever filled them.
+   *
+   * `loading` is a dependency on purpose: when a verification finishes it flips
+   * back to false and re-runs this effect, so a code that arrived while another
+   * confirm() was in flight is not silently dropped. `attemptedCodeRef` still
+   * prevents the same code from being sent to Firebase twice.
+   */
   useEffect(() => {
     if (step !== "otp") return;
     if (otp.length !== OTP_LENGTH) return;
     if (verifyingRef.current) return;
     if (attemptedCodeRef.current === otp) return;
     void verifyCode(otp);
-  }, [otp, step, verifyCode]);
+  }, [otp, step, loading, verifyCode]);
 
   async function handleSendOtp(e: React.FormEvent) {
     e.preventDefault();
@@ -286,7 +466,7 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
 
       attemptedCodeRef.current = null;
       verifyingRef.current = false;
-      setOtp("");
+      applyOtpValue("");
       setStep("otp");
       startCountdown();
       toast.success("Doğrulama kodu gönderildi!");
@@ -323,14 +503,12 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
 
   /**
    * One handler for typing, pasting and auto-fill: iOS delivers the whole
-   * 6-digit code in a single change event, so anything that is not a digit is
-   * stripped and the result is clamped to six characters.
+   * 6-digit code in a single event, so everything is normalised in one place.
+   * Bound to both onChange and onInput — a duplicate call is a no-op because
+   * applyOtpValue is idempotent for an unchanged value.
    */
-  function handleOtpChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const digits = e.target.value.replace(/\D/g, "").slice(0, OTP_LENGTH);
-    setOtp(digits);
-    // Editing after a failed attempt re-arms the auto-submit effect.
-    if (digits !== attemptedCodeRef.current) attemptedCodeRef.current = null;
+  function handleOtpChange(e: React.ChangeEvent<HTMLInputElement> | React.FormEvent<HTMLInputElement>) {
+    applyOtpValue((e.target as HTMLInputElement).value);
   }
 
   function handleResend() {
@@ -428,7 +606,7 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
             )}
           </button>
         </form>
-      ) : (
+      ) : step === "otp" ? (
         <form onSubmit={handleVerifySubmit} className="space-y-6">
           <div className="space-y-3">
             <div className="flex items-center justify-between">
@@ -476,11 +654,28 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
                 maxLength={OTP_LENGTH}
                 value={otp}
                 onChange={handleOtpChange}
+                onInput={handleOtpChange}
+                onPaste={() => {
+                  // The pasted text lands in the value only after this event;
+                  // read it back on the next tick.
+                  setTimeout(() => {
+                    if (otpInputRef.current) applyOtpValue(otpInputRef.current.value);
+                  }, 0);
+                }}
                 onFocus={() => setOtpFocused(true)}
                 onBlur={() => setOtpFocused(false)}
-                disabled={loading}
+                /*
+                  readOnly, NOT disabled: a disabled input is dropped from the
+                  browser's auto-fill target list mid-flight, so an SMS arriving
+                  while a verification is in progress could no longer fill it.
+                  readOnly blocks typing just the same and keeps the value.
+                */
+                readOnly={loading}
                 aria-label="6 haneli doğrulama kodu"
-                className="absolute inset-0 z-10 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed"
+                aria-busy={loading}
+                className={`absolute inset-0 z-10 w-full h-full opacity-0 ${
+                  loading ? "cursor-not-allowed" : "cursor-pointer"
+                }`}
               />
 
               <div className="flex gap-2 justify-center pointer-events-none" aria-hidden="true">
@@ -539,6 +734,85 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
               </button>
             )}
           </p>
+        </form>
+      ) : (
+        /*
+          KVKK consent step. Reached ONLY on a 428 from /api/customer/auth,
+          i.e. the phone number is verified but no consented Customer row
+          exists yet. Nothing has been written server-side at this point, so
+          closing the page here leaves no record behind.
+        */
+        <form onSubmit={handleConsentSubmit} className="space-y-6">
+          <div className="space-y-3">
+            <h3 className="text-white font-semibold text-base">
+              Son bir adım: KVKK Onayı
+            </h3>
+            <p className="text-sm text-green-300/80">
+              <span className="font-semibold text-white">
+                {`${countryCode} ${phoneNumber}`}
+              </span>{" "}
+              numarası doğrulandı. Sadakat kartınızın oluşturulabilmesi için
+              kişisel verilerinizin işlenmesine onay vermeniz gerekiyor.
+            </p>
+
+            <div className="rounded-xl bg-white/10 border border-white/20 p-4 text-xs text-green-100/90 leading-relaxed max-h-44 overflow-y-auto space-y-2">
+              <p>
+                Ekrem Coşkun Döner olarak, sadakat programını yürütebilmek
+                amacıyla <strong>adınızı ve telefon numaranızı</strong> ve
+                programa ilişkin <strong>sipariş ve ödül kayıtlarınızı</strong>{" "}
+                işliyoruz.
+              </p>
+              <p>
+                Verileriniz yalnızca damga biriktirme, ödül tanımlama ve
+                ödüllerin kasada kullandırılması için kullanılır; pazarlama
+                amacıyla üçüncü kişilerle paylaşılmaz.
+              </p>
+              <p>
+                6698 sayılı KVKK kapsamında verilerinize erişme, düzeltilmesini
+                veya silinmesini isteme hakkına sahipsiniz. Silme talebiniz
+                halinde kaydınız ve tüm sipariş/ödül geçmişiniz kalıcı olarak
+                kaldırılır.
+              </p>
+            </div>
+
+            <label className="flex items-start gap-3 cursor-pointer select-none">
+              <input
+                id="kvkk-consent"
+                type="checkbox"
+                checked={kvkkChecked}
+                onChange={(e) => setKvkkChecked(e.target.checked)}
+                className="mt-0.5 w-5 h-5 shrink-0 rounded border-white/40 accent-green-500"
+              />
+              <span className="text-sm text-green-100">
+                KVKK aydınlatma metnini okudum ve kişisel verilerimin yukarıda
+                belirtilen amaçlarla işlenmesini onaylıyorum.
+              </span>
+            </label>
+          </div>
+
+          <button
+            id="kvkk-consent-btn"
+            type="submit"
+            disabled={loading || !kvkkChecked}
+            className="w-full py-3 px-6 rounded-xl bg-green-500 hover:bg-green-400 active:scale-[0.98] text-white font-semibold text-base shadow-lg shadow-green-900/40 transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+          >
+            {loading ? (
+              <>
+                <span className="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full" />
+                Kaydediliyor...
+              </>
+            ) : (
+              "Onaylıyorum ve Devam Et"
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={handleGoBackToPhone}
+            className="w-full text-center text-xs text-green-300/70 hover:text-white transition-colors"
+          >
+            Vazgeç
+          </button>
         </form>
       )}
     </div>

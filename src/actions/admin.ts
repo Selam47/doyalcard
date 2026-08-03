@@ -60,20 +60,56 @@ function describeDbError(error: unknown, fallback: string): string {
   return fallback;
 }
 
+/**
+ * Run one dashboard counter query, returning `null` — NOT `0` — on failure.
+ *
+ * Collapsing a failed query into 0 is the bug this guards against: "0 Toplam
+ * Sipariş" is a perfectly plausible number, so a Neon outage rendered as a
+ * calm, wrong dashboard instead of an error. `null` is unambiguous, and the
+ * caller turns any `null` into a visible error state.
+ *
+ * Errors are still swallowed here rather than rethrown so that ONE failing
+ * counter cannot abort the sibling queries mid-`Promise.all`; the failure is
+ * carried in the value instead.
+ */
 async function safeCount(
   label: string,
   query: () => Promise<number>
-): Promise<number> {
+): Promise<number | null> {
   try {
     return await query();
   } catch (error) {
-    console.error(`Admin stats fetch error [${label}]:`, error);
-    return 0;
+    console.error(`[getDashboardStats] count failed [${label}]:`, error);
+    return null;
   }
 }
 
-export async function getDashboardStats() {
-  await requireAdmin();
+export interface DashboardStats {
+  totalOrders: number;
+  totalCustomers: number;
+  totalRewards: number;
+  claimedRewards: number;
+  pendingRewards: number;
+  branches: number;
+  recentOrders: number;
+}
+
+export type DashboardStatsResult =
+  | { success: true; stats: DashboardStats }
+  | { success: false; error: string };
+
+/**
+ * Read the admin dashboard counters.
+ *
+ * Returns a discriminated result instead of throwing, per the Server Action
+ * error contract in CLAUDE.md §4 — a thrown Server Action reaches the client
+ * as an opaque digest, so neither the authorization message nor the database
+ * error would ever be visible to the admin. Both failure modes now come back
+ * as `{ success: false, error }` that the page can render.
+ */
+export async function getDashboardStats(): Promise<DashboardStatsResult> {
+  const guard = await ensureAdmin();
+  if (!guard.ok) return { success: false, error: guard.error };
 
   try {
     const [
@@ -104,25 +140,41 @@ export async function getDashboardStats() {
       ),
     ]);
 
+    // A `null` anywhere means that counter could not be read. Reporting the
+    // rest as if they were complete would understate every derived figure
+    // (pendingRewards especially), so the whole read fails loudly instead.
+    if (
+      totalOrders === null ||
+      totalCustomers === null ||
+      totalRewards === null ||
+      claimedRewards === null ||
+      branches === null ||
+      recentOrders === null
+    ) {
+      return {
+        success: false,
+        error:
+          "İstatistikler şu anda okunamıyor (veritabanı hatası). Gösterilen değerler eksik olabileceği için gizlendi.",
+      };
+    }
+
     return {
-      totalOrders,
-      totalCustomers,
-      totalRewards,
-      claimedRewards,
-      pendingRewards: Math.max(totalRewards - claimedRewards, 0),
-      branches,
-      recentOrders,
+      success: true,
+      stats: {
+        totalOrders,
+        totalCustomers,
+        totalRewards,
+        claimedRewards,
+        pendingRewards: Math.max(totalRewards - claimedRewards, 0),
+        branches,
+        recentOrders,
+      },
     };
   } catch (error) {
-    console.error("Admin stats fetch error:", error);
+    console.error("[getDashboardStats] Error:", error);
     return {
-      totalOrders: 0,
-      totalCustomers: 0,
-      totalRewards: 0,
-      claimedRewards: 0,
-      pendingRewards: 0,
-      branches: 0,
-      recentOrders: 0,
+      success: false,
+      error: describeDbError(error, "İstatistikler yüklenemedi"),
     };
   }
 }

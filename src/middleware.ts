@@ -45,6 +45,21 @@ export function isPublicAsset(pathname: string): boolean {
 // added under these prefixes is protected by default, instead of shipping open
 // until someone remembers to add a guard.
 
+/**
+ * Pages that are ALWAYS rendered as-is, for every visitor, session or not.
+ *
+ * "/" is the public landing page ("Ekrem Coşkun Döner — Dijital Sadakat Kartı
+ * Sistemi" with the Müşteri/Personel buttons). It must never be gated and must
+ * never be redirected away from, in either direction: not to /login for an
+ * anonymous visitor, and not to /staff or /admin for a signed-in one. A shared
+ * counter device or a customer borrowing a staff phone otherwise has no way to
+ * reach the customer login at all.
+ *
+ * The corresponding server-side guarantee lives in src/app/page.tsx, which does
+ * not read a session. Both halves must stay redirect-free.
+ */
+const ALWAYS_PUBLIC_PAGES = new Set<string>(["/", "/login", "/customer/login"]);
+
 /** ADMIN role required. */
 const ADMIN_PREFIXES = ["/admin", "/api/admin"] as const;
 
@@ -133,6 +148,12 @@ const withAuth = auth(function middleware(request) {
       response.headers.set("Vary", "Origin");
     }
     return response;
+  }
+
+  // Landing / login screens: pass through before any session is consulted, so
+  // there is no code path in which a session could influence what "/" renders.
+  if (ALWAYS_PUBLIC_PAGES.has(pathname)) {
+    return NextResponse.next();
   }
 
   const session = request.auth;

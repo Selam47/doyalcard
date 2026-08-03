@@ -203,9 +203,22 @@ export type RemoveStampResult =
  *  - current_cycle_count -= 1 (floor 0)
  *  - lifetime_count      -= 1 (floor 0)  ← "Toplam Sipariş"
  *
- * The most recent Order row is deleted too, but ONLY when no Reward is
- * attached to it, so `orders.count()` on the admin dashboard stays in sync
- * without ever orphaning or silently voiding an already-granted reward.
+ * The order that is deleted is THE NEWEST one — the row `addOrder` just
+ * created. It is never "the newest order that happens to have no reward":
+ * searching for a reward-free row silently walked PAST the newest order
+ * whenever that order granted a reward and deleted an unrelated older one, so
+ * the correction landed on the wrong history entry, and when EVERY order
+ * carried a reward the query found nothing at all, deleted nothing, and still
+ * decremented both counters — which is exactly how `orders.count()` drifted
+ * away from `lifetimeCount`.
+ *
+ * If the newest order has a Reward attached, the operation is REFUSED instead:
+ * deleting that row would cascade the reward away (the relation is
+ * `onDelete: Cascade`), silently voiding something the customer earned or has
+ * already been handed. Refusing keeps the invariant
+ * `orders.count() == lifetimeCount` true in both branches — counters only move
+ * when a row actually moves with them.
+ *
  * A stranded legacy cycle count is normalized against the active threshold
  * on the way down, so a correction can never leave the card above maxStamps.
  */
@@ -240,19 +253,23 @@ export async function removeStamp(
       });
       const maxStamps = resolveMaxStamps(pickCycleRule(activeRules));
 
+      // The row this correction is meant to undo: the customer's most recent
+      // order, whatever it is. Ties on `createdAt` (two stamps inside the same
+      // millisecond) are broken by `id` so the choice is deterministic.
+      const lastOrder = await tx.order.findFirst({
+        where: { customerId: customer.id },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        select: { id: true, reward: { select: { id: true } } },
+      });
+
+      if (!lastOrder) throw new Error("NO_ORDER_TO_REMOVE");
+      if (lastOrder.reward) throw new Error("ORDER_HAS_REWARD");
+
       const baseCycleCount = clampCycleCount(customer.currentCycleCount, maxStamps);
       const newCycleCount = Math.max(0, baseCycleCount - 1);
       const newLifetimeCount = Math.max(0, customer.lifetimeCount - 1);
 
-      const lastOrder = await tx.order.findFirst({
-        where: { customerId: customer.id, reward: { is: null } },
-        orderBy: { createdAt: "desc" },
-        select: { id: true },
-      });
-
-      if (lastOrder) {
-        await tx.order.delete({ where: { id: lastOrder.id } });
-      }
+      await tx.order.delete({ where: { id: lastOrder.id } });
 
       await tx.customer.update({
         where: { id: customer.id },
@@ -278,8 +295,23 @@ export async function removeStamp(
   } catch (error) {
     console.error("[removeStamp] Error:", error);
 
-    if (error instanceof Error && error.message === "CUSTOMER_NOT_FOUND") {
-      return { success: false, error: "Müşteri bulunamadı" };
+    if (error instanceof Error) {
+      if (error.message === "CUSTOMER_NOT_FOUND") {
+        return { success: false, error: "Müşteri bulunamadı" };
+      }
+      if (error.message === "NO_ORDER_TO_REMOVE") {
+        return {
+          success: false,
+          error: "Bu müşteride silinecek sipariş yok.",
+        };
+      }
+      if (error.message === "ORDER_HAS_REWARD") {
+        return {
+          success: false,
+          error:
+            "Son siparişe bir ödül bağlı olduğu için damga silinemez. Ödül geçmişini değiştirmek için yöneticinize başvurun.",
+        };
+      }
     }
 
     if (isTxConflict(error)) {

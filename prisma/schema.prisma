@@ -79,6 +79,32 @@ model Customer {
   @@map("customers")
 }
 
+/// Server-side revocation list for customer session JWTs.
+///
+/// The customer session is a stateless signed cookie, so clearing the cookie
+/// only removes the copy the browser happens to hold — a token captured from a
+/// shared device, a proxy log or an XSS payload stays valid for its full TTL.
+/// Logout writes the token's `jti` here and `getCustomerSession()` refuses any
+/// token whose `jti` is present, which turns logout into a real invalidation.
+///
+/// Rows are disposable: once `expiresAt` has passed the token is rejected by
+/// signature verification anyway, so expired rows are pruned on every write and
+/// the table stays bounded by "logouts within one TTL window".
+///
+/// Deliberately NOT related to Customer with a foreign key — a revocation must
+/// outlive the row it refers to (and `deleteCustomer` must not have to know
+/// about this table to keep its transaction correct).
+model RevokedCustomerSession {
+  jti        String   @id @db.Uuid
+  customerId String   @map("customer_id")
+  expiresAt  DateTime @map("expires_at")
+  revokedAt  DateTime @default(now()) @map("revoked_at")
+
+  @@index([expiresAt])
+  @@index([customerId])
+  @@map("revoked_customer_sessions")
+}
+
 model Order {
   id        String   @id @default(cuid())
   createdAt DateTime @default(now()) @map("created_at")

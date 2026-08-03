@@ -12,10 +12,16 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 
 import { isSessionScopedCookie } from "@/lib/session-cookie";
+import { revokeCurrentCustomerSession } from "@/lib/customer-session";
 
 export const dynamic = "force-dynamic";
 
 export async function POST() {
+  // Revoke BEFORE the cookies are dropped — once the cookie is gone the token's
+  // `jti` is unrecoverable and the token would stay valid for anyone holding a
+  // copy. Same ordering requirement as clearCustomerSession().
+  await revokeCurrentCustomerSession();
+
   const cookieStore = await cookies();
 
   for (const cookie of cookieStore.getAll()) {

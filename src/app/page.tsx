@@ -1,24 +1,27 @@
-import { redirect } from "next/navigation";
-import { auth } from "@/lib/auth";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import Link from "next/link";
 import { getCampaignConfig } from "@/lib/campaign-rules.server";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * The root URL is the public landing page and NOTHING ELSE.
+ *
+ * It deliberately does not read a session and never redirects. This page used
+ * to send an ADMIN to /admin and a STAFF user to /staff, which meant anyone
+ * with a live staff cookie — including a customer handing their phone to the
+ * counter, or staff simply typing the bare domain — could not reach the screen
+ * that offers "Müşteri Girişi" at all. Landing somewhere you did not ask to go
+ * is not a shortcut, it is a dead end for every other visitor on that device.
+ *
+ * The guarantee is structural, not a conditional: with no session read there is
+ * no branch here that could ever redirect. Authenticated users navigate to
+ * their panel by clicking a link, never automatically. Keep it that way — the
+ * middleware likewise leaves "/" alone (see src/middleware.ts).
+ */
 export default async function HomePage() {
-  const [session, campaign] = await Promise.all([
-    auth(),
-    getCampaignConfig(),
-  ]);
+  const campaign = await getCampaignConfig();
   const { rules: activeRules, cycleRule, maxStamps } = campaign;
-
-  if (session?.user?.role === "ADMIN") {
-    redirect("/admin");
-  }
-  if (session?.user?.role === "STAFF") {
-    redirect("/staff");
-  }
 
   const easyEarnCopy = cycleRule
     ? `Her etli ekmek siparişinizde otomatik olarak puan kazanırsınız. ${maxStamps} siparişte ${cycleRule.rewardName} kazanırsınız!`
