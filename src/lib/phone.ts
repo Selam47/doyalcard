@@ -18,24 +18,22 @@ export function normalizeDigits(raw: string): string {
   return raw.replace(/\D/g, "").replace(/^0+/, "");
 }
 
-/**
- * Combine a "+"-prefixed country code with a raw local number into a
- * clean E.164 string. Used by the phone login form, which collects the
- * country code and local number as two separate inputs.
+/*
+ * `toE164(countryCode, rawPhone)` USED TO LIVE HERE AND IS DELIBERATELY GONE.
+ *
+ * It was the customer login form's normalizer while `registerCustomer` and the
+ * OTP callback used `normalizePhoneToE164` below — two normalizers for one
+ * number, which is the whole class of bug this module exists to prevent. It
+ * also applied no national-length rule, so a truncated entry like "916 28 63"
+ * came out as "+909162863": a string that satisfies E164_REGEX and is therefore
+ * sent to Firebase, which rejects it with `auth/invalid-phone-number`.
+ *
+ * Use `normalizePhoneToE164(rawPhone, countryCode)` instead. It takes the same
+ * two pieces of information, returns `null` rather than a plausible-looking
+ * wrong answer, and is the ONE spelling every surface agrees on. Do not
+ * reintroduce a second normalizer for a "special case" — the special case is
+ * always another way for two records to describe one human.
  */
-export function toE164(countryCode: string, rawPhone: string): string {
-  const trimmed = rawPhone.trim();
-  const rawDigits = trimmed.replace(/\D/g, "");
-  const countryDigits = countryCode.replace(/\D/g, "");
-
-  // Also accept a complete international number pasted into the local field.
-  if (trimmed.startsWith("+")) return `+${rawDigits}`;
-
-  const localDigits = normalizeDigits(trimmed);
-  if (localDigits.startsWith(countryDigits)) return `+${localDigits}`;
-
-  return `+${countryDigits}${localDigits}`;
-}
 
 /**
  * Sanitize a single already-combined phone string (e.g. "+90 555 123 45 67"

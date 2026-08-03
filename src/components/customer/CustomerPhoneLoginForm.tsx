@@ -24,10 +24,11 @@ import { useRouter } from "next/navigation";
 import {
   RecaptchaVerifier,
   signInWithPhoneNumber,
+  signOut,
   type ConfirmationResult,
 } from "firebase/auth";
 import { auth, getFirebaseConfigIssues } from "@/lib/firebase";
-import { toE164, E164_REGEX } from "@/lib/phone";
+import { normalizePhoneToE164, isValidE164 } from "@/lib/phone";
 import { toast } from "sonner";
 
 const COUNTRY_CODES = [
@@ -132,6 +133,14 @@ export function CustomerPhoneLoginForm({
   const [step, setStep] = useState<Step>("phone");
   const [countryCode, setCountryCode] = useState("+90");
   const [phoneNumber, setPhoneNumber] = useState("");
+  /**
+   * The exact E.164 string that was handed to Firebase. Shown on the OTP and
+   * consent screens instead of the raw `countryCode + phoneNumber` pair, so the
+   * customer sees the number the SMS actually went to — the two can differ
+   * (leading "0" stripped, country code already typed in) and when they do, the
+   * raw echo hides precisely the mismatch worth noticing.
+   */
+  const [sentPhone, setSentPhone] = useState("");
   /** The OTP is a single string — one real <input> drives six styled cells. */
   const [otp, setOtp] = useState("");
   const [otpFocused, setOtpFocused] = useState(false);
@@ -149,6 +158,23 @@ export function CustomerPhoneLoginForm({
   const idTokenRef = useRef<string | null>(null);
   const recaptchaVerifierRef = useRef<RecaptchaVerifier | null>(null);
   const recaptchaGenerationRef = useRef(0);
+  /**
+   * True from just before `signInWithPhoneNumber` until it settles.
+   *
+   * grecaptcha fires `expired-callback` / `error-callback` on its own schedule,
+   * and those used to call `destroyRecaptcha()` unconditionally. When one landed
+   * WHILE `signInWithPhoneNumber` was awaiting `verifier.verify()`, Firebase was
+   * left holding a verifier that had just been `clear()`ed and whose host node
+   * had been ripped out of the DOM. The call then rejected with
+   * `auth/internal-error` / `auth/invalid-app-credential` / `auth/argument-error`
+   * — none of which were mapped, so all three surfaced as the generic
+   * "SMS gönderilemedi" toast. That is the reported bug's most common shape.
+   *
+   * During a send the callbacks now only INVALIDATE the verifier; the actual
+   * teardown happens in handleSendOtp's own catch/finally, after Firebase has
+   * finished with it.
+   */
+  const sendInFlightRef = useRef(false);
   /** The permanently-mounted wrapper (see the JSX comment below). */
   const recaptchaContainerRef = useRef<HTMLDivElement | null>(null);
   /**
@@ -295,13 +321,23 @@ export function CustomerPhoneLoginForm({
     const host = document.createElement("div");
     container.appendChild(host);
 
+    // See sendInFlightRef: tearing the verifier down from under an in-flight
+    // signInWithPhoneNumber is what turns a recoverable challenge into an
+    // unmapped auth/internal-error. While a send is running these callbacks
+    // only note the problem; handleSendOtp disposes of the verifier itself.
+    const disposeUnlessSending = (reason: string) => {
+      console.warn(`[reCAPTCHA] ${reason}`);
+      if (sendInFlightRef.current) return;
+      destroyRecaptcha();
+    };
+
     const verifier = new RecaptchaVerifier(auth, host, {
       size: "invisible",
       callback: () => {
         // reCAPTCHA solved — allow SMS send.
       },
-      "expired-callback": destroyRecaptcha,
-      "error-callback": destroyRecaptcha,
+      "expired-callback": () => disposeUnlessSending("expired-callback"),
+      "error-callback": () => disposeUnlessSending("error-callback"),
     });
 
     // Store every handle before render(): a submit or a Strict Mode cleanup can
@@ -377,8 +413,13 @@ export function CustomerPhoneLoginForm({
     attemptedCodeRef.current = null;
     setResendCountdown(0);
     setKvkkChecked(false);
+    setSentPhone("");
     setStep("phone");
     applyOtpValue("");
+    // Firebase istemcisinde asılı kalmış kullanıcıyı da düşür: aksi halde
+    // yarıda bırakılan bir KVKK adımından sonra bir sonraki SMS isteği
+    // hâlâ açık bir oturumun üzerine biniyor. Best-effort.
+    void signOut(auth).catch(() => {});
   }, [destroyRecaptcha, applyOtpValue]);
 
   /**
@@ -622,10 +663,29 @@ export function CustomerPhoneLoginForm({
   async function handleSendOtp(e: React.FormEvent) {
     e.preventDefault();
 
-    const fullPhone = toE164(countryCode, phoneNumber);
+    /*
+     * THE canonical normalizer — the SAME one `registerCustomer` (staff side)
+     * and `/api/customer/auth` (OTP callback) use. This form previously called
+     * `toE164`, a looser helper that only glued the country code onto whatever
+     * digits were typed:
+     *
+     *   • it applied no national-length rule, so a half-entered "916 28 63"
+     *     became "+909162863" — a string the generic E164 regex happily
+     *     accepts, sent straight to Firebase, which rejects it;
+     *   • it produced a spelling that could differ from the one the cashier's
+     *     registration stored, so even a successful OTP resolved to a
+     *     different (or missing) Customer row.
+     *
+     * Funnelling every surface through one normalizer is what makes "the number
+     * the staff registered" and "the number the customer types" the same
+     * string, byte for byte.
+     */
+    const fullPhone = normalizePhoneToE164(phoneNumber, countryCode);
 
-    if (!E164_REGEX.test(fullPhone)) {
-      toast.error("Geçerli bir telefon numarası girin.");
+    if (!fullPhone || !isValidE164(fullPhone)) {
+      toast.error(
+        "Geçerli bir telefon numarası girin (örn: 0530 123 45 67 veya 530 123 45 67)."
+      );
       return;
     }
 
@@ -646,6 +706,34 @@ export function CustomerPhoneLoginForm({
 
     setLoading(true);
     try {
+      /*
+       * OTURUM TEMİZLİĞİ — Firebase'e dokunmadan ÖNCE.
+       *
+       * İki ayrı artık, iki ayrı arıza:
+       *
+       * 1. `customer_session` cookie'si. Bu cihazda daha önce başka biri (ya da
+       *    aynı kişi başka bir numarayla) giriş yaptıysa cookie hâlâ canlıdır.
+       *    Yeni numara doğrulanana kadar o kimlik geçerli kalır; akış yarıda
+       *    kalırsa eski oturum hiç düşmeden yerinde durur.
+       *
+       * 2. Firebase istemcisinde ASILI KALMIŞ kullanıcı. `confirm()` başarılı
+       *    olduğu hâlde /api/customer/auth 428 (KVKK onayı gerekli) döndüğünde
+       *    — yani TAM OLARAK yeni müşteri senaryosunda — kullanıcı formu
+       *    kapatırsa Firebase oturumu açık kalır. Bir sonraki denemede
+       *    signInWithPhoneNumber, hâlâ oturumu açık bir kullanıcının üzerine
+       *    yeni bir doğrulama başlatmaya çalışır ve reCAPTCHA jetonu bu
+       *    durumda `auth/invalid-app-credential` ile reddedilebilir. Kod
+       *    haritalanmamış olduğu için ekrana düşen tek şey "SMS gönderilemedi"
+       *    oluyordu.
+       *
+       * İkisi de best-effort: burada bir hata, kullanıcının SMS almasına engel
+       * olmamalı.
+       */
+      await Promise.allSettled([
+        fetch("/api/customer/logout", { method: "POST", cache: "no-store" }),
+        signOut(auth),
+      ]);
+
       // A fresh, fully rendered verifier for this send. Never reuse the one
       // from a previous attempt: Firebase treats a verifier as single-use.
       const verifier = await createRecaptcha();
@@ -656,9 +744,17 @@ export function CustomerPhoneLoginForm({
       // numarası, SMS bölge politikası, kota/faturalandırma).
       console.info("[OTP send] signInWithPhoneNumber çağrılıyor →", fullPhone);
 
-      const result = await withTimeout(
-        signInWithPhoneNumber(auth, fullPhone, verifier)
-      );
+      sendInFlightRef.current = true;
+      let result: ConfirmationResult;
+      try {
+        result = await withTimeout(
+          signInWithPhoneNumber(auth, fullPhone, verifier)
+        );
+      } finally {
+        // Firebase artık verifier ile işini bitirdi; expired/error geri
+        // çağrıları bu andan itibaren yeniden yıkım yapabilir.
+        sendInFlightRef.current = false;
+      }
       confirmationRef.current = result;
 
       console.info(
@@ -670,16 +766,30 @@ export function CustomerPhoneLoginForm({
       attemptedCodeRef.current = null;
       verifyingRef.current = false;
       applyOtpValue("");
+      setSentPhone(fullPhone);
       setStep("otp");
       startCountdown();
       toast.success("Doğrulama kodu gönderildi!");
       setTimeout(() => otpInputRef.current?.focus(), 100);
     } catch (err: unknown) {
+      sendInFlightRef.current = false;
       const code = (err as { code?: string }).code;
-      // Kodu AYRICA loglıyoruz: hata nesnesi konsolda katlanmış gelebiliyor ve
-      // asıl teşhis bilgisi olan `code` gözden kaçıyordu.
+      const message = (err as { message?: string }).message;
+      /*
+       * Teşhis bilgisinin TAMAMINI tek satırda logluyoruz.
+       *
+       * Sorunun kökü buydu: Firebase'in `code` alanı — `auth/…` ile başlayan ve
+       * "neden SMS gitmedi" sorusunun tek gerçek cevabı olan alan — tek bir
+       * genel toast'un içinde kayboluyordu. Kullanıcı "SMS gönderilemedi"
+       * görüyor, konsolda katlanmış bir hata nesnesi duruyor ve numaranın mı,
+       * reCAPTCHA'nın mı, kotanın mı yoksa alan adı yetkisinin mi sorun olduğu
+       * hiçbir yerden anlaşılamıyordu. Artık kod, mesaj ve denenen numara
+       * birlikte yazılıyor.
+       */
       console.error(
-        `[reCAPTCHA / OTP send error] code=${code ?? "(yok)"}`,
+        `[OTP send error] code=${code ?? "(yok)"} phone=${fullPhone} message=${
+          message ?? "(yok)"
+        }`,
         err
       );
 
@@ -726,8 +836,45 @@ export function CustomerPhoneLoginForm({
         toast.error("Ağ hatası. İnternet bağlantınızı kontrol edin.");
       } else if (code === "auth/timeout") {
         toast.error("SMS isteği zaman aşımına uğradı. Bağlantınızı kontrol edip tekrar deneyin.");
+      } else if (
+        /*
+         * reCAPTCHA jetonu geçersiz / süresi dolmuş / zaten kullanılmış.
+         * Firebase'in tek bir jetonu iki kez görmesi, yıkılmış bir verifier'a
+         * denk gelmesi ve yetkisiz alan adı hep buraya düşer. Yeni bir verifier
+         * ile ikinci deneme neredeyse her zaman başarılı olur — bu yüzden
+         * kullanıcıya "tekrar deneyin" diyoruz, "yönetici ile görüşün" değil.
+         */
+        code === "auth/invalid-app-credential" ||
+        code === "auth/missing-app-credential" ||
+        code === "auth/invalid-recaptcha-token" ||
+        code === "auth/missing-recaptcha-token" ||
+        code === "auth/invalid-recaptcha-action" ||
+        code === "auth/argument-error"
+      ) {
+        toast.error(
+          "Güvenlik doğrulaması yenilenmeli. Lütfen tekrar deneyin."
+        );
+      } else if (code === "auth/app-not-authorized") {
+        toast.error(
+          "Uygulama bu Firebase projesinde yetkili değil. Lütfen yönetici ile iletişime geçin."
+        );
+      } else if (code === "auth/web-storage-unsupported") {
+        toast.error(
+          "Tarayıcınız çerezleri/depolamayı engelliyor. Gizli moddan çıkıp tekrar deneyin."
+        );
+      } else if (code === "auth/user-disabled") {
+        toast.error("Bu numara devre dışı bırakılmış. Lütfen yönetici ile iletişime geçin.");
       } else {
-        toast.error("SMS gönderilemedi. Lütfen tekrar deneyin.");
+        /*
+         * Bilinmeyen kod. Kodu MESAJIN İÇİNE yazıyoruz: telefondaki bir müşteri
+         * konsolu açamaz, ama ekran görüntüsünü gönderebilir. Sadece "SMS
+         * gönderilemedi" demek, teşhis için gereken tek bilgiyi atmak demekti.
+         */
+        toast.error(
+          code
+            ? `SMS gönderilemedi (${code}). Lütfen tekrar deneyin.`
+            : "SMS gönderilemedi. Lütfen tekrar deneyin."
+        );
       }
     } finally {
       setLoading(false);
@@ -918,7 +1065,7 @@ export function CustomerPhoneLoginForm({
 
             <p className="text-sm text-green-300/80">
               <span className="font-semibold text-white">
-                {`${countryCode} ${phoneNumber}`}
+                {sentPhone || `${countryCode} ${phoneNumber}`}
               </span>{" "}
               numarasına gönderilen 6 haneli kodu girin.
             </p>
@@ -1043,7 +1190,7 @@ export function CustomerPhoneLoginForm({
             </h3>
             <p className="text-sm text-green-300/80">
               <span className="font-semibold text-white">
-                {`${countryCode} ${phoneNumber}`}
+                {sentPhone || `${countryCode} ${phoneNumber}`}
               </span>{" "}
               numarası doğrulandı. Sadakat kartınızın oluşturulabilmesi için
               kişisel verilerinizin işlenmesine onay vermeniz gerekiyor.
