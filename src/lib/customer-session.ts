@@ -30,6 +30,7 @@ import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@/generated/prisma/client";
 import { CUSTOMER_SESSION_COOKIE } from "@/lib/session-cookie";
 
 const COOKIE_NAME = CUSTOMER_SESSION_COOKIE;
@@ -91,6 +92,24 @@ export async function setCustomerSession(
  * outage logging customers out is recoverable; honouring a token we could not
  * check is not.
  */
+/**
+ * Bu hata "tablo yok" mu?
+ *
+ * Prisma eksik tabloyu P2021 olarak raporlar; `@prisma/adapter-pg` sürücüsü
+ * altında ham PostgreSQL kodu 42P01 olarak da sızabilir. İkisini de yakalıyoruz.
+ */
+function isMissingTableError(error: unknown): boolean {
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    if (error.code === "P2021") return true;
+  }
+
+  const code = (error as { code?: unknown })?.code;
+  if (code === "42P01" || code === "P2021") return true;
+
+  const message = error instanceof Error ? error.message : String(error);
+  return /relation .*revoked_customer_sessions.* does not exist/i.test(message);
+}
+
 async function isRevoked(jti: string): Promise<boolean> {
   try {
     const row = await prisma.revokedCustomerSession.findUnique({
@@ -99,6 +118,34 @@ async function isRevoked(jti: string): Promise<boolean> {
     });
     return row !== null;
   } catch (error) {
+    /*
+     * Bu dal BİR KEZ üretimde tam bir müşteri kesintisine yol açtı ve teşhisi
+     * neredeyse imkânsızdı, çünkü tek belirtisi tek satırlık bir sunucu logu ve
+     * "OTP doğrulandı ama panele girilemiyor" davranışıydı.
+     *
+     * Sebep: `RevokedCustomerSession` modeli şemaya eklenip veritabanına HİÇ
+     * push edilmemişti. Her sorgu 42P01 ile patlıyordu, fail-closed politikası
+     * bunu "iptal edilmiş" sayıyordu ve `getCustomerSession()` GEÇERLİ
+     * cookie'ler için bile null dönüyordu. Sonuç: /customer/dashboard ve
+     * /card/<uuid> herkesi giriş ekranına geri atıyordu — dolayısıyla müşteri
+     * personelin tarayacağı QR kodunu hiç gösteremiyordu.
+     *
+     * Fail-closed davranışı KORUNUYOR (doğrulayamadığımız bir token'ı geçerli
+     * saymak güvenlik gerilemesi olur), ama artık kök sebep loglarda gözden
+     * kaçamaz.
+     */
+    if (isMissingTableError(error)) {
+      console.error(
+        "[customer-session] FATAL: `revoked_customer_sessions` tablosu " +
+          "veritabanında YOK. Her müşteri oturumu fail-closed politikası " +
+          "gereği geçersiz sayılıyor — yani HİÇBİR müşteri giriş yapamaz. " +
+          "Düzeltme: prisma/sql/2026-08-03_revoked_customer_sessions.sql " +
+          "dosyasını çalıştırın (veya `npx prisma db push`).",
+        error
+      );
+      return true;
+    }
+
     console.error("[customer-session] revocation lookup failed:", error);
     return true;
   }

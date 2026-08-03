@@ -35,6 +35,28 @@ function isUnder(pathname: string, prefix: string): boolean {
   return pathname === prefix || pathname.startsWith(`${prefix}/`);
 }
 
+/**
+ * Sekme sıfırlaması HANGİ oturum sınıfını düşürmeli?
+ *
+ * Bunu daraltmamızın sebebi somut bir hata: ham bir kamera taraması
+ * /card/<uuid> adresini HER ZAMAN yeni bir sekmede açar. Sıfırlama koşulsuz
+ * "her şeyi sil" olduğu sürece, kasadaki personel müşterinin QR'ını telefon
+ * kamerasıyla okuttuğu anda kendi NextAuth personel oturumundan da düşüyordu.
+ *
+ * Kural: sekmenin indiği sayfanın sahibi olan oturum sınıfı silinir. Nötr
+ * sayfalarda (/, /login, /customer/login) korunacak bir bağlam yok, orada
+ * eski davranış — hepsini sil — geçerli kalır.
+ */
+type ResetScope = "customer" | "staff" | "all";
+
+function resetScopeFor(pathname: string): ResetScope {
+  if (STAFF_PREFIXES.some((prefix) => isUnder(pathname, prefix))) return "staff";
+  if (CUSTOMER_PREFIXES.some((prefix) => isUnder(pathname, prefix))) {
+    return "customer";
+  }
+  return "all";
+}
+
 function loginTargetFor(pathname: string, search = ""): string | null {
   if (STAFF_PREFIXES.some((prefix) => isUnder(pathname, prefix))) return "/login";
   if (CUSTOMER_PREFIXES.some((prefix) => isUnder(pathname, prefix))) {
@@ -74,11 +96,15 @@ function runTabCheck(): Promise<"fresh" | "resumed"> {
     if (alreadySeen) return "resumed" as const;
 
     try {
-      // Taze sekme → sunucudaki oturumu düşür.
+      // Taze sekme → sunucudaki oturumu düşür. Scope, sekmenin İNDİĞİ yola
+      // göre belirlenir; window.location kullanıyoruz çünkü bu kontrol sekme
+      // başına bir kez, ilk yüklemede çalışır.
       await fetch("/api/session/reset", {
         method: "POST",
         credentials: "same-origin",
         cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope: resetScopeFor(window.location.pathname) }),
       });
     } catch {
       // Ağ hatası olsa bile yönlendirmeye devam: kullanıcı yeniden giriş

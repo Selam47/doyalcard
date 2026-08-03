@@ -31,9 +31,33 @@ export const CUSTOMER_SESSION_COOKIE = "customer_session";
 const AUTH_SESSION_COOKIE_PATTERN =
   /^(?:__Secure-)?authjs\.session-token(?:\.\d+)?$/;
 
+/**
+ * Hangi oturum sınıfı hedefleniyor?
+ *
+ *  • "customer" — sadece müşteri portalının cookie'si.
+ *  • "staff"    — sadece NextAuth personel/yönetici cookie'si.
+ *  • "all"      — ikisi de. `stripSessionCookiePersistence` için tek doğru
+ *                 değer budur: `Expires` sökme politikası her iki oturum
+ *                 türü için de geçerli.
+ */
+export type SessionScope = "customer" | "staff" | "all";
+
 /** Bu cookie "kalıcı olmayan oturum" politikasına tabi mi? */
-export function isSessionScopedCookie(name: string): boolean {
-  return name === CUSTOMER_SESSION_COOKIE || AUTH_SESSION_COOKIE_PATTERN.test(name);
+export function isSessionScopedCookie(
+  name: string,
+  scope: SessionScope = "all"
+): boolean {
+  const isCustomer = name === CUSTOMER_SESSION_COOKIE;
+  const isStaff = AUTH_SESSION_COOKIE_PATTERN.test(name);
+
+  if (scope === "customer") return isCustomer;
+  if (scope === "staff") return isStaff;
+  return isCustomer || isStaff;
+}
+
+/** Gövdeden/parametreden gelen serbest metni güvenli bir scope'a indirger. */
+export function parseSessionScope(value: unknown): SessionScope {
+  return value === "customer" || value === "staff" ? value : "all";
 }
 
 /** `Expires=` veya `Max-Age=` niteliği mi? (cookie'nin adı/değeri değil) */

@@ -1,59 +1,122 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Html5Qrcode } from "html5-qrcode";
+
+const CONTAINER_ID = "qr-scanner-container";
+
+/**
+ * Müşterinin QR'ı public /card/<uuid> adresini kodlar — müşterinin kendi
+ * telefonunun açtığı adres budur. Personel taradığında ise işlem yüzeyine,
+ * yani /staff/customer/<uuid> adresine yönlendiriyoruz. Bu yeniden yazma
+ * KASITLI olarak burada, istemcide yapılır; /card/[uuid] sayfası personele
+ * dahi kasa terminaline giden bir bağlantı RENDER ETMEZ (bkz. CLAUDE.md §3).
+ */
+const CARD_UUID_PATTERN = /\/card\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
 export function QrScannerSection() {
   const router = useRouter();
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scannerRef = useRef<Html5Qrcode | null>(null);
-  const containerId = "qr-scanner-container";
+  /**
+   * Çözülen ilk QR'ı mandallar.
+   *
+   * html5-qrcode başarı geri çağrısını saniyede `fps` kez tetikler ve
+   * `stopScanner()` asenkrondur — durdurma tamamlanana kadar geri çağrı
+   * defalarca çalışabiliyordu. Mandal olmadan tek bir tarama arka arkaya
+   * birden fazla `router.push` üretir; Next.js router bu yarışta gezinmeyi
+   * iptal edip yerinde sayabiliyor, yani "hiçbir şey olmuyor" belirtisi.
+   */
+  const handledRef = useRef(false);
 
-  async function startScanner() {
-    setError(null);
-    setScanning(true);
+  /**
+   * SADECE kamerayı söker — React state'ine DOKUNMAZ.
+   *
+   * Bu ayrım şart: teardown effect temizliğinden de çağrılıyor ve orada
+   * `setScanning(false)` çağırmak React Strict Mode'da (dev'de effect'ler iki
+   * kez çalışır) ilk kopyanın temizliğinin taramayı daha başlar başlamaz
+   * kapatmasına yol açıyordu.
+   */
+  const teardownScanner = useCallback(async () => {
+    const scanner = scannerRef.current;
+    scannerRef.current = null;
+    if (!scanner) return;
     try {
-      const scanner = new Html5Qrcode(containerId);
-      scannerRef.current = scanner;
-
-      await scanner.start(
-        { facingMode: "environment" },
-        { fps: 10, qrbox: { width: 250, height: 250 } },
-        (decodedText) => {
-          const match = decodedText.match(/\/card\/([a-f0-9-]{36})/i);
-          if (match?.[1]) {
-            stopScanner();
-            router.push(`/staff/customer/${match[1]}`);
-          }
-        },
-        () => {}
-      );
-    } catch (err) {
-      setScanning(false);
-      setError("Kamera erişilemedi. Lütfen tarayıcı izinlerini kontrol edin.");
-      console.error(err);
+      await scanner.stop();
+      scanner.clear();
+    } catch {
+      /* zaten durmuş ya da hiç başlamamış olabilir — sorun değil */
     }
+  }, []);
+
+  function startScanner() {
+    setError(null);
+    handledRef.current = false;
+    // Gerçek başlatma aşağıdaki effect'te. Bkz. oradaki açıklama.
+    setScanning(true);
   }
 
-  async function stopScanner() {
-    if (scannerRef.current) {
-      try {
-        await scannerRef.current.stop();
-      } catch {
-        /* ignore */
-      }
-      scannerRef.current = null;
-    }
+  /** "Taramayı Durdur" düğmesi: state'i kapat, teardown'ı effect yapar. */
+  function stopScanner() {
     setScanning(false);
   }
 
+  /**
+   * Kamerayı `scanning` true olarak RENDER EDİLDİKTEN SONRA başlatıyoruz.
+   *
+   * Eskiden `startScanner()` içinde `setScanning(true)` ile aynı tick'te
+   * `new Html5Qrcode()` ve `scanner.start()` çağrılıyordu. React state
+   * güncellemeleri toplu (batched) uygulandığı için kapsayıcı o anda hâlâ
+   * `hidden` (display:none) durumdaydı; html5-qrcode tarama bölgesinin
+   * genişliğini 0 ölçüp sessizce kurulamıyordu. Effect'e taşımak, DOM'un
+   * görünür hâle geldiğini garanti eder.
+   */
   useEffect(() => {
+    if (!scanning) return;
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const scanner = new Html5Qrcode(CONTAINER_ID);
+        if (cancelled) return;
+        scannerRef.current = scanner;
+
+        await scanner.start(
+          { facingMode: "environment" },
+          { fps: 10, qrbox: { width: 250, height: 250 } },
+          (decodedText) => {
+            if (handledRef.current) return;
+            const match = decodedText.match(CARD_UUID_PATTERN);
+            if (!match?.[1]) return;
+
+            handledRef.current = true;
+            // Gezinmeyi beklemeden tetikliyoruz; kamerayı kapatmak
+            // `setScanning(false)` üzerinden effect temizliğine düşer.
+            router.push(`/staff/customer/${match[1]}`);
+            setScanning(false);
+          },
+          () => {}
+        );
+
+        // Başlatma tamamlanana kadar effect iptal edilmiş olabilir
+        // (unmount ya da Strict Mode'un ikinci koşusu) — o durumda hemen sök.
+        if (cancelled) void teardownScanner();
+      } catch (err) {
+        if (cancelled) return;
+        console.error("[QR scanner] başlatılamadı:", err);
+        setScanning(false);
+        setError("Kamera erişilemedi. Lütfen tarayıcı izinlerini kontrol edin.");
+      }
+    })();
+
     return () => {
-      stopScanner();
+      cancelled = true;
+      void teardownScanner();
     };
-  }, []);
+  }, [scanning, router, teardownScanner]);
 
   return (
     <div className="bg-white rounded-2xl shadow-md overflow-hidden">
@@ -69,7 +132,7 @@ export function QrScannerSection() {
       <div className="p-5 space-y-4">
         {/* Scanner viewport */}
         <div
-          id={containerId}
+          id={CONTAINER_ID}
           className={`rounded-xl overflow-hidden bg-gray-900 ${
             scanning ? "block" : "hidden"
           }`}

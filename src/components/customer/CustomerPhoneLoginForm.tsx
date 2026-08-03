@@ -26,7 +26,7 @@ import {
   signInWithPhoneNumber,
   type ConfirmationResult,
 } from "firebase/auth";
-import { auth } from "@/lib/firebase";
+import { auth, getFirebaseConfigIssues } from "@/lib/firebase";
 import { toE164, E164_REGEX } from "@/lib/phone";
 import { toast } from "sonner";
 
@@ -516,14 +516,41 @@ export function CustomerPhoneLoginForm({
       return;
     }
 
+    /*
+     * Yapılandırma eksikse Firebase'i hiç çağırmıyoruz. Aksi halde hata,
+     * "SMS gönderilemedi" gibi genel bir toast'a dönüşüyor ve gerçek sebep —
+     * Vercel'de tanımlanmamış (ya da eklendikten sonra yeniden deploy
+     * edilmemiş) bir NEXT_PUBLIC_FIREBASE_* değişkeni — hiç görünmüyordu.
+     */
+    const configIssues = getFirebaseConfigIssues();
+    if (configIssues.length > 0) {
+      console.error("[OTP send] Firebase yapılandırması eksik:", configIssues);
+      toast.error(
+        "SMS servisi yapılandırılmamış. Lütfen yönetici ile iletişime geçin."
+      );
+      return;
+    }
+
     setLoading(true);
     try {
       const verifier = await createRecaptcha();
+
+      // Bu iki log kasıtlı: "SMS hiç gelmiyor" şikâyetinde ilk sorulacak soru
+      // çağrının GERÇEKTEN yapılıp yapılmadığıdır. Promise resolve olduğu hâlde
+      // SMS gelmiyorsa sorun kodda değil, Firebase konsolundadır (test
+      // numarası, SMS bölge politikası, kota/faturalandırma).
+      console.info("[OTP send] signInWithPhoneNumber çağrılıyor →", fullPhone);
 
       const result = await withTimeout(
         signInWithPhoneNumber(auth, fullPhone, verifier)
       );
       confirmationRef.current = result;
+
+      console.info(
+        "[OTP send] Firebase isteği BAŞARILI (verificationId alındı). " +
+          "Bu noktadan sonra SMS gelmiyorsa sebep Firebase konsolundadır: " +
+          "test telefon numarası, SMS bölge politikası, kota veya faturalandırma."
+      );
 
       attemptedCodeRef.current = null;
       verifyingRef.current = false;
@@ -533,11 +560,28 @@ export function CustomerPhoneLoginForm({
       toast.success("Doğrulama kodu gönderildi!");
       setTimeout(() => otpInputRef.current?.focus(), 100);
     } catch (err: unknown) {
-      console.error("[reCAPTCHA / OTP send error]", err);
+      const code = (err as { code?: string }).code;
+      // Kodu AYRICA loglıyoruz: hata nesnesi konsolda katlanmış gelebiliyor ve
+      // asıl teşhis bilgisi olan `code` gözden kaçıyordu.
+      console.error(
+        `[reCAPTCHA / OTP send error] code=${code ?? "(yok)"}`,
+        err
+      );
       destroyRecaptcha();
 
-      const code = (err as { code?: string }).code;
-      if (code === "auth/invalid-phone-number") {
+      if (code === "auth/operation-not-allowed") {
+        toast.error(
+          "Telefon ile giriş Firebase'de etkin değil. Lütfen yönetici ile iletişime geçin."
+        );
+      } else if (code === "auth/invalid-api-key" || code === "auth/api-key-not-valid") {
+        toast.error(
+          "SMS servisi yapılandırması hatalı. Lütfen yönetici ile iletişime geçin."
+        );
+      } else if (code === "auth/billing-not-enabled") {
+        toast.error(
+          "SMS servisi için faturalandırma etkin değil. Lütfen yönetici ile iletişime geçin."
+        );
+      } else if (code === "auth/invalid-phone-number") {
         toast.error("Geçersiz telefon numarası formatı.");
       } else if (code === "auth/too-many-requests") {
         toast.error("Çok fazla deneme. Lütfen birkaç dakika sonra tekrar deneyin.");
