@@ -44,7 +44,8 @@ export default async function CardPage({ params }: Props) {
   const access = await resolveCardAccess(uuid);
 
   if (access.status === "unauthenticated") {
-    redirect("/customer/login");
+    const loginUrl = new URLSearchParams({ callbackUrl: `/card/${uuid}` });
+    redirect(`/customer/login?${loginUrl.toString()}`);
   }
 
   if (access.status === "forbidden") {

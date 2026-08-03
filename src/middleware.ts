@@ -60,6 +60,13 @@ export function isPublicAsset(pathname: string): boolean {
  */
 const ALWAYS_PUBLIC_PAGES = new Set<string>(["/", "/login", "/customer/login"]);
 
+/**
+ * Routes authenticated by the separate customer cookie (or by their own
+ * server-side card access guard). Auth.js middleware must never turn a raw QR
+ * navigation into a staff-login redirect or discard its query string.
+ */
+const CUSTOMER_PAGE_PREFIXES = ["/customer", "/card"] as const;
+
 /** ADMIN role required. */
 const ADMIN_PREFIXES = ["/admin", "/api/admin"] as const;
 
@@ -152,7 +159,10 @@ const withAuth = auth(function middleware(request) {
 
   // Landing / login screens: pass through before any session is consulted, so
   // there is no code path in which a session could influence what "/" renders.
-  if (ALWAYS_PUBLIC_PAGES.has(pathname)) {
+  if (
+    ALWAYS_PUBLIC_PAGES.has(pathname) ||
+    matchesAny(pathname, CUSTOMER_PAGE_PREFIXES)
+  ) {
     return NextResponse.next();
   }
 

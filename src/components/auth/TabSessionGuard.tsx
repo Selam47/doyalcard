@@ -35,9 +35,13 @@ function isUnder(pathname: string, prefix: string): boolean {
   return pathname === prefix || pathname.startsWith(`${prefix}/`);
 }
 
-function loginTargetFor(pathname: string): string | null {
+function loginTargetFor(pathname: string, search = ""): string | null {
   if (STAFF_PREFIXES.some((prefix) => isUnder(pathname, prefix))) return "/login";
   if (CUSTOMER_PREFIXES.some((prefix) => isUnder(pathname, prefix))) {
+    if (isUnder(pathname, "/card")) {
+      const params = new URLSearchParams({ callbackUrl: `${pathname}${search}` });
+      return `/customer/login?${params.toString()}`;
+    }
     return "/customer/login";
   }
   return null;
@@ -104,7 +108,10 @@ export function TabSessionGuard({ children }: { children: React.ReactNode }) {
 
       // Hedefi window.location'dan okuyoruz ki effect'in bağımlılığı olmasın
       // ve sekme başına tek sefer çalışsın, her rota değişiminde değil.
-      const target = result === "fresh" ? loginTargetFor(window.location.pathname) : null;
+      const target =
+        result === "fresh"
+          ? loginTargetFor(window.location.pathname, window.location.search)
+          : null;
 
       if (target) {
         // replace(): geri tuşuyla "hâlâ girişli" görünen sayfaya dönülmesin.

@@ -24,7 +24,17 @@ export function normalizeDigits(raw: string): string {
  * country code and local number as two separate inputs.
  */
 export function toE164(countryCode: string, rawPhone: string): string {
-  return `${countryCode}${normalizeDigits(rawPhone)}`;
+  const trimmed = rawPhone.trim();
+  const rawDigits = trimmed.replace(/\D/g, "");
+  const countryDigits = countryCode.replace(/\D/g, "");
+
+  // Also accept a complete international number pasted into the local field.
+  if (trimmed.startsWith("+")) return `+${rawDigits}`;
+
+  const localDigits = normalizeDigits(trimmed);
+  if (localDigits.startsWith(countryDigits)) return `+${localDigits}`;
+
+  return `+${countryDigits}${localDigits}`;
 }
 
 /**

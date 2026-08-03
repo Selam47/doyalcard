@@ -41,6 +41,26 @@ const COUNTRY_CODES = [
 ];
 
 const OTP_LENGTH = 6;
+const FIREBASE_OPERATION_TIMEOUT_MS = 60_000;
+
+function withTimeout<T>(promise: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      reject(Object.assign(new Error("Firebase operation timed out"), { code: "auth/timeout" }));
+    }, FIREBASE_OPERATION_TIMEOUT_MS);
+
+    promise.then(
+      (value) => {
+        window.clearTimeout(timeoutId);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timeoutId);
+        reject(error);
+      }
+    );
+  });
+}
 
 /**
  * "phone" → "otp" → (only when the backend asks for it) "consent".
@@ -55,17 +75,22 @@ type Step = "phone" | "otp" | "consent";
 interface CustomerPhoneLoginFormProps {
   /** True when a valid customer session cookie already exists server-side. */
   alreadyLoggedIn?: boolean;
+  /** Validated server-side destination, usually the card URL that was scanned. */
+  redirectTo?: string;
 }
 
-export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhoneLoginFormProps) {
+export function CustomerPhoneLoginForm({
+  alreadyLoggedIn = false,
+  redirectTo = "/customer/dashboard",
+}: CustomerPhoneLoginFormProps) {
   const router = useRouter();
 
   useEffect(() => {
     if (!alreadyLoggedIn) return;
     const [entry] = performance.getEntriesByType("navigation") as PerformanceNavigationTiming[];
     if (entry?.type === "back_forward") return;
-    router.replace("/customer/dashboard");
-  }, [alreadyLoggedIn, router]);
+    router.replace(redirectTo);
+  }, [alreadyLoggedIn, redirectTo, router]);
 
   const [step, setStep] = useState<Step>("phone");
   const [countryCode, setCountryCode] = useState("+90");
@@ -86,6 +111,7 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
    */
   const idTokenRef = useRef<string | null>(null);
   const recaptchaVerifierRef = useRef<RecaptchaVerifier | null>(null);
+  const recaptchaGenerationRef = useRef(0);
   const recaptchaContainerRef = useRef<HTMLDivElement | null>(null);
   const otpInputRef = useRef<HTMLInputElement | null>(null);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -135,18 +161,22 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
   }, []);
 
   const destroyRecaptcha = useCallback(() => {
-    if (recaptchaVerifierRef.current) {
+    recaptchaGenerationRef.current += 1;
+
+    const verifiers = new Set<RecaptchaVerifier>();
+    if (recaptchaVerifierRef.current) verifiers.add(recaptchaVerifierRef.current);
+    if (window.recaptchaVerifier) verifiers.add(window.recaptchaVerifier);
+
+    for (const verifier of verifiers) {
       try {
-        recaptchaVerifierRef.current.clear();
+        verifier.clear();
       } catch {
-        // Widget may already be gone — safe to ignore
+        // Widget may already be gone — safe to ignore.
       }
-      recaptchaVerifierRef.current = null;
     }
+
+    recaptchaVerifierRef.current = null;
     delete window.recaptchaVerifier;
-    if (recaptchaContainerRef.current) {
-      recaptchaContainerRef.current.innerHTML = "";
-    }
   }, []);
 
   useEffect(() => {
@@ -158,33 +188,56 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
 
   const createRecaptcha = useCallback(async (): Promise<RecaptchaVerifier> => {
     destroyRecaptcha();
+    const generation = recaptchaGenerationRef.current;
 
     const verifier = new RecaptchaVerifier(
       auth,
-      "recaptcha-container",
+      recaptchaContainerRef.current ?? "recaptcha-container",
       {
         size: "invisible",
         callback: () => {
-          // reCAPTCHA solved — allow SMS send
+          // reCAPTCHA solved — allow SMS send.
         },
-        "expired-callback": () => {
-          if (window.recaptchaVerifier) {
-            try { window.recaptchaVerifier.clear(); } catch { /* already gone */ }
-          }
-        },
-        "error-callback": () => {
-          destroyRecaptcha();
-        },
+        "expired-callback": destroyRecaptcha,
+        "error-callback": destroyRecaptcha,
       }
     );
 
+    // Store both references before render(): a submit or Strict Mode cleanup can
+    // now reliably clear an initialization that is still in flight.
+    recaptchaVerifierRef.current = verifier;
     window.recaptchaVerifier = verifier;
 
-    await verifier.render();
-
-    recaptchaVerifierRef.current = verifier;
-    return verifier;
+    try {
+      await verifier.render();
+      if (
+        generation !== recaptchaGenerationRef.current ||
+        recaptchaVerifierRef.current !== verifier
+      ) {
+        throw Object.assign(new Error("Stale reCAPTCHA initialization"), {
+          name: "AbortError",
+        });
+      }
+      return verifier;
+    } catch (error) {
+      if (recaptchaVerifierRef.current === verifier) destroyRecaptcha();
+      throw error;
+    }
   }, [destroyRecaptcha]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void createRecaptcha().catch((error: unknown) => {
+      if (!cancelled && (error as { name?: string }).name !== "AbortError") {
+        console.error("[reCAPTCHA initialization error]", error);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [createRecaptcha]);
 
   const startCountdown = useCallback(() => {
     if (countdownRef.current) clearInterval(countdownRef.current);
@@ -228,13 +281,15 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
       idToken: string,
       consent: boolean
     ): Promise<"ok" | "consent-required"> => {
-      const res = await fetch("/api/customer/auth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          consent ? { idToken, kvkkConsent: true } : { idToken }
-        ),
-      });
+      const res = await withTimeout(
+        fetch("/api/customer/auth", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            consent ? { idToken, kvkkConsent: true } : { idToken }
+          ),
+        })
+      );
 
       const data = (await res.json().catch(() => ({}))) as {
         isNew?: boolean;
@@ -254,11 +309,11 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
           : "Tekrar hoş geldiniz!"
       );
       idTokenRef.current = null;
-      router.push("/customer/dashboard");
+      router.push(redirectTo);
       router.refresh();
       return "ok";
     },
-    [router]
+    [redirectTo, router]
   );
 
   /**
@@ -286,8 +341,10 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
       otpInputRef.current?.blur();
 
       try {
-        const credential = await confirmationRef.current.confirm(code);
-        const idToken = await credential.user.getIdToken();
+        const credential = await withTimeout(
+          confirmationRef.current.confirm(code)
+        );
+        const idToken = await withTimeout(credential.user.getIdToken());
         idTokenRef.current = idToken;
 
         const outcome = await submitSession(idToken, false);
@@ -308,6 +365,8 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
         } else if (errCode === "auth/code-expired" || errCode === "auth/session-expired") {
           toast.error("Kodun süresi doldu. Lütfen yeni kod isteyin.");
           handleGoBackToPhone();
+        } else if (errCode === "auth/timeout") {
+          toast.error("Doğrulama zaman aşımına uğradı. Bağlantınızı kontrol edip tekrar deneyin.");
         } else {
           toast.error("Doğrulama başarısız. Lütfen tekrar deneyin.");
         }
@@ -461,7 +520,9 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
     try {
       const verifier = await createRecaptcha();
 
-      const result = await signInWithPhoneNumber(auth, fullPhone, verifier);
+      const result = await withTimeout(
+        signInWithPhoneNumber(auth, fullPhone, verifier)
+      );
       confirmationRef.current = result;
 
       attemptedCodeRef.current = null;
@@ -488,6 +549,8 @@ export function CustomerPhoneLoginForm({ alreadyLoggedIn = false }: CustomerPhon
         toast.error("Bu alan adı Firebase'de yetkili değil. Lütfen yönetici ile iletişime geçin.");
       } else if (code === "auth/network-request-failed") {
         toast.error("Ağ hatası. İnternet bağlantınızı kontrol edin.");
+      } else if (code === "auth/timeout") {
+        toast.error("SMS isteği zaman aşımına uğradı. Bağlantınızı kontrol edip tekrar deneyin.");
       } else {
         toast.error("SMS gönderilemedi. Lütfen tekrar deneyin.");
       }

@@ -9,9 +9,41 @@ export const metadata: Metadata = {
   description: "Telefon numaranızla giriş yapın, sadakat kartınıza erişin.",
 };
 
-export default async function CustomerLoginPage() {
-  const session = await getCustomerSession();
+interface CustomerLoginPageProps {
+  searchParams: Promise<{ callbackUrl?: string | string[] }>;
+}
+
+const CARD_PATH_PATTERN =
+  /^\/card\/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function getSafeDestination(value: string | string[] | undefined): string {
+  const candidate = Array.isArray(value) ? value[0] : value;
+  if (!candidate) return "/customer/dashboard";
+
+  try {
+    const url = new URL(candidate, "http://customer-login.local");
+    if (url.origin !== "http://customer-login.local") {
+      return "/customer/dashboard";
+    }
+    if (!CARD_PATH_PATTERN.test(url.pathname)) {
+      return "/customer/dashboard";
+    }
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return "/customer/dashboard";
+  }
+}
+
+export default async function CustomerLoginPage({
+  searchParams,
+}: CustomerLoginPageProps) {
+  const [session, params] = await Promise.all([
+    getCustomerSession(),
+    searchParams,
+  ]);
   const alreadyLoggedIn = Boolean(session);
+  const redirectTo = getSafeDestination(params.callbackUrl);
+  const returningToCard = redirectTo.startsWith("/card/");
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-green-950 via-green-900 to-emerald-800 p-4">
@@ -39,20 +71,33 @@ export default async function CustomerLoginPage() {
           <div className="mb-6">
             <h2 className="text-xl font-semibold text-white">Hoş Geldiniz</h2>
             <p className="text-green-300/80 text-sm mt-1">
-              Telefon numaranızla giriş yapın veya yeni hesap oluşturun.
+              {returningToCard
+                ? "Kartınızı güvenli şekilde görüntülemek için giriş yapın."
+                : "Telefon numaranızla giriş yapın veya yeni hesap oluşturun."}
             </p>
           </div>
 
-          <CustomerPhoneLoginForm alreadyLoggedIn={alreadyLoggedIn} />
+          <CustomerPhoneLoginForm
+            alreadyLoggedIn={alreadyLoggedIn}
+            redirectTo={redirectTo}
+          />
         </div>
 
-        {/* Personel link */}
-        <p className="text-center text-xs text-white/40 mt-6">
-          Personel misiniz?{" "}
-          <Link href="/login" className="text-green-300 hover:text-white transition-colors underline">
-            Personel Girişi
-          </Link>
-        </p>
+        <div className="text-center text-xs text-white/40 mt-6 space-y-2">
+          {returningToCard && (
+            <p>
+              <Link href="/" className="text-green-300 hover:text-white transition-colors underline">
+                Ana sayfaya dön
+              </Link>
+            </p>
+          )}
+          <p>
+            Personel misiniz?{" "}
+            <Link href="/login" className="text-green-300 hover:text-white transition-colors underline">
+              Personel Girişi
+            </Link>
+          </p>
+        </div>
       </div>
     </div>
   );

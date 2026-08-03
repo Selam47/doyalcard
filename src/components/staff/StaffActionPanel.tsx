@@ -227,7 +227,7 @@ export function StaffActionPanel({
         {isAdmin && (
           <div className="pt-4 border-t border-gray-100 space-y-2">
             <p className="text-xs font-semibold uppercase tracking-wide text-red-500">
-              Tehlikeli Bölge
+              Uyarı: Yaptığınız işlem geri alınamaz!
             </p>
             <DeleteCustomerButton
               customerId={customer.id}
