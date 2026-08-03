@@ -112,7 +112,25 @@ export function CustomerPhoneLoginForm({
   const idTokenRef = useRef<string | null>(null);
   const recaptchaVerifierRef = useRef<RecaptchaVerifier | null>(null);
   const recaptchaGenerationRef = useRef(0);
+  /** The permanently-mounted wrapper (see the JSX comment below). */
   const recaptchaContainerRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * The throw-away child node the CURRENT verifier is bound to.
+   *
+   * grecaptcha refuses to render twice into the same element — that is
+   * literally the "reCAPTCHA has already been rendered in this element"
+   * error. `verifier.clear()` is not a reliable inverse of `render()`: it is a
+   * no-op for a widget whose render() has not resolved yet, so a verifier that
+   * was superseded mid-initialization still drops its widget into the
+   * container afterwards, and the next render() collides with it.
+   *
+   * Binding every verifier to a BRAND-NEW div removes the race by
+   * construction: a node that was just created cannot already hold a widget,
+   * and tearing the node out of the DOM takes any leftover widget with it. The
+   * outer container stays mounted for the whole component lifetime as CLAUDE.md
+   * requires; only this inner node churns.
+   */
+  const recaptchaHostRef = useRef<HTMLDivElement | null>(null);
   const otpInputRef = useRef<HTMLInputElement | null>(null);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   /**
@@ -160,24 +178,59 @@ export function CustomerPhoneLoginForm({
     return digits;
   }, []);
 
+  /**
+   * Detach one verifier and the node it was rendered into. Both halves matter:
+   * `clear()` unhooks Firebase's own bookkeeping, removing the host node
+   * evicts any widget grecaptcha may still paint (or may already have painted)
+   * there. Never throws — teardown runs on paths that are already failing.
+   */
+  const teardownVerifier = useCallback(
+    (verifier: RecaptchaVerifier | null | undefined, host: HTMLElement | null) => {
+      if (verifier) {
+        try {
+          // clear(), never reset(): reset() breaks the build on firebase v10+.
+          verifier.clear();
+        } catch {
+          // Widget may already be gone — safe to ignore.
+        }
+      }
+      try {
+        host?.parentNode?.removeChild(host);
+      } catch {
+        // Node already detached.
+      }
+    },
+    []
+  );
+
   const destroyRecaptcha = useCallback(() => {
+    // Bumping the generation invalidates any render() still in flight, so a
+    // verifier that resolves after this point tears itself down instead of
+    // leaving a live widget behind.
     recaptchaGenerationRef.current += 1;
 
+    // Both handles are checked before anything is constructed: a leftover
+    // window.recaptchaVerifier from a previous mount (Fast Refresh, Strict
+    // Mode's double effect, bfcache restore) must be cleared, not orphaned.
     const verifiers = new Set<RecaptchaVerifier>();
     if (recaptchaVerifierRef.current) verifiers.add(recaptchaVerifierRef.current);
     if (window.recaptchaVerifier) verifiers.add(window.recaptchaVerifier);
 
     for (const verifier of verifiers) {
-      try {
-        verifier.clear();
-      } catch {
-        // Widget may already be gone — safe to ignore.
-      }
+      teardownVerifier(verifier, null);
     }
 
     recaptchaVerifierRef.current = null;
+    recaptchaHostRef.current = null;
     delete window.recaptchaVerifier;
-  }, []);
+
+    // Empty the wrapper itself: this also sweeps hosts belonging to verifiers
+    // we no longer hold a reference to (e.g. one abandoned by a Fast Refresh).
+    const container = recaptchaContainerRef.current;
+    if (container) {
+      while (container.firstChild) container.removeChild(container.firstChild);
+    }
+  }, [teardownVerifier]);
 
   useEffect(() => {
     return () => {
@@ -187,25 +240,37 @@ export function CustomerPhoneLoginForm({
   }, [destroyRecaptcha]);
 
   const createRecaptcha = useCallback(async (): Promise<RecaptchaVerifier> => {
+    // Always dispose of whatever is there before constructing anything —
+    // window.recaptchaVerifier included. Firebase also forbids reusing a
+    // verifier across two signInWithPhoneNumber calls, so every send gets a
+    // fresh one rather than a cached instance.
     destroyRecaptcha();
     const generation = recaptchaGenerationRef.current;
 
-    const verifier = new RecaptchaVerifier(
-      auth,
-      recaptchaContainerRef.current ?? "recaptcha-container",
-      {
-        size: "invisible",
-        callback: () => {
-          // reCAPTCHA solved — allow SMS send.
-        },
-        "expired-callback": destroyRecaptcha,
-        "error-callback": destroyRecaptcha,
-      }
-    );
+    const container = recaptchaContainerRef.current;
+    if (!container) {
+      throw new Error("reCAPTCHA container is not mounted");
+    }
 
-    // Store both references before render(): a submit or Strict Mode cleanup can
+    // Fresh node per verifier — see recaptchaHostRef. Passing the element
+    // itself (not the "recaptcha-container" id string) keeps Firebase from
+    // re-resolving the id to a node that another widget already owns.
+    const host = document.createElement("div");
+    container.appendChild(host);
+
+    const verifier = new RecaptchaVerifier(auth, host, {
+      size: "invisible",
+      callback: () => {
+        // reCAPTCHA solved — allow SMS send.
+      },
+      "expired-callback": destroyRecaptcha,
+      "error-callback": destroyRecaptcha,
+    });
+
+    // Store every handle before render(): a submit or a Strict Mode cleanup can
     // now reliably clear an initialization that is still in flight.
     recaptchaVerifierRef.current = verifier;
+    recaptchaHostRef.current = host;
     window.recaptchaVerifier = verifier;
 
     try {
@@ -220,10 +285,21 @@ export function CustomerPhoneLoginForm({
       }
       return verifier;
     } catch (error) {
-      if (recaptchaVerifierRef.current === verifier) destroyRecaptcha();
+      // Tear down THIS verifier unconditionally, even when it is no longer the
+      // current one. The previous version only cleaned up while it still held
+      // the ref, so a verifier superseded mid-render() finished rendering into
+      // the shared container and was never cleared — the widget it left behind
+      // is what made the next render() throw "reCAPTCHA has already been
+      // rendered in this element".
+      teardownVerifier(verifier, host);
+
+      if (recaptchaVerifierRef.current === verifier) recaptchaVerifierRef.current = null;
+      if (recaptchaHostRef.current === host) recaptchaHostRef.current = null;
+      if (window.recaptchaVerifier === verifier) delete window.recaptchaVerifier;
+
       throw error;
     }
-  }, [destroyRecaptcha]);
+  }, [destroyRecaptcha, teardownVerifier]);
 
   useEffect(() => {
     let cancelled = false;
@@ -533,6 +609,8 @@ export function CustomerPhoneLoginForm({
 
     setLoading(true);
     try {
+      // A fresh, fully rendered verifier for this send. Never reuse the one
+      // from a previous attempt: Firebase treats a verifier as single-use.
       const verifier = await createRecaptcha();
 
       // Bu iki log kasıtlı: "SMS hiç gelmiyor" şikâyetinde ilk sorulacak soru
@@ -567,7 +645,23 @@ export function CustomerPhoneLoginForm({
         `[reCAPTCHA / OTP send error] code=${code ?? "(yok)"}`,
         err
       );
+
+      /*
+       * Her hata yolunda verifier'ı YOK EDİYORUZ: hem ref'i hem
+       * window.recaptchaVerifier'ı temizler, hem de widget'ın DOM
+       * düğümünü söker. Yarım kalmış bir widget kapsayıcıda kalırsa
+       * kullanıcının bir sonraki denemesi "reCAPTCHA has already been
+       * rendered in this element" ile patlar ve sayfa yenilemeden
+       * kurtulmanın yolu kalmaz. Böylece "Tekrar Dene" her zaman
+       * sıfırdan başlar.
+       */
       destroyRecaptcha();
+
+      if ((err as { name?: string }).name === "AbortError") {
+        // Bu deneme daha yenisi tarafından geçersiz kılındı (ör. çift tık).
+        // Kullanıcıya gösterilecek bir hata yok; yeni deneme zaten yolda.
+        return;
+      }
 
       if (code === "auth/operation-not-allowed") {
         toast.error(
@@ -632,6 +726,11 @@ export function CustomerPhoneLoginForm({
         It is referenced via recaptchaContainerRef (not a string id) so React
         never unmounts it between step 1 and step 2, preventing duplicate-widget
         errors caused by Firebase re-scanning the DOM.
+        React must also never own its children: each verifier is rendered into a
+        throw-away <div> that createRecaptcha appends here and destroyRecaptcha
+        removes, which is why this element is left empty in JSX. Reusing one node
+        for two widgets is exactly what triggers "reCAPTCHA has already been
+        rendered in this element".
         It is moved off-screen (not width:0/height:0) — a zero-dimension
         container can prevent Google's reCAPTCHA fingerprinting/scoring iframe
         from laying itself out correctly and, if risk scoring ever escalates
