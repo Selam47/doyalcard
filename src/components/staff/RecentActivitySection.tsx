@@ -4,11 +4,21 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { getRecentActivity, type ActivityItem } from "@/actions/staff-dashboard";
 import { Skeleton } from "@/components/ui/skeleton";
+import { usePolledRefresh } from "@/lib/use-polled-refresh";
 import { formatClockTime, formatRelativeTime } from "@/lib/relative-time";
 import { maskPhone } from "@/lib/utils";
 
-/** How often the feed re-fetches. Slow enough to be free, fast enough to feel live. */
-const POLL_MS = 20_000;
+/**
+ * How often the feed re-fetches.
+ *
+ * Was 20s, which on a busy Saturday means every open till device hits the
+ * database three times a minute for this section alone — before counting the
+ * extra fetches each tab wake-up used to trigger. The relative timestamps keep
+ * ticking every {@link TICK_MS} regardless, so the panel still *looks* live
+ * between fetches, and a stamp the cashier just applied is reflected by the
+ * action's own revalidation rather than by this poll.
+ */
+const POLL_MS = 60_000;
 
 /** How often the "x dakika önce" labels re-render between fetches. */
 const TICK_MS = 15_000;
@@ -60,36 +70,16 @@ export function RecentActivitySection() {
     }
   }, []);
 
+  // Fetching: one in-flight request at a time, wake-up events deduped, next
+  // poll measured from the end of the last fetch. See use-polled-refresh.ts.
+  usePolledRefresh(load, { intervalMs: POLL_MS });
+
+  // Re-rendering the "x dakika önce" labels is purely local — no network, no
+  // database — so it stays on its own fast timer.
   useEffect(() => {
-    let cancelled = false;
-
-    const refresh = () => {
-      if (document.visibilityState === "hidden") return;
-      if (!cancelled) void load();
-    };
-
-    queueMicrotask(() => {
-      if (!cancelled) void load();
-    });
-
-    const pollId = window.setInterval(refresh, POLL_MS);
-    const tickId = window.setInterval(() => {
-      if (!cancelled) setNow(Date.now());
-    }, TICK_MS);
-
-    document.addEventListener("visibilitychange", refresh);
-    window.addEventListener("focus", refresh);
-    window.addEventListener("pageshow", refresh);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(pollId);
-      window.clearInterval(tickId);
-      document.removeEventListener("visibilitychange", refresh);
-      window.removeEventListener("focus", refresh);
-      window.removeEventListener("pageshow", refresh);
-    };
-  }, [load]);
+    const tickId = window.setInterval(() => setNow(Date.now()), TICK_MS);
+    return () => window.clearInterval(tickId);
+  }, []);
 
   const isLoading = items === null && now === null;
 

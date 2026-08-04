@@ -1,19 +1,24 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import Link from "next/link";
 import {
   getCustomersNearReward,
   type NearRewardCustomer,
 } from "@/actions/staff-dashboard";
 import { Skeleton } from "@/components/ui/skeleton";
+import { usePolledRefresh } from "@/lib/use-polled-refresh";
 import { maskPhone } from "@/lib/utils";
 
 /** Rows shown before "tümünü gör" is pressed. */
 const COLLAPSED_LIMIT = 8;
 
-/** Kept in step with the activity feed so both sections refresh together. */
-const POLL_MS = 20_000;
+/**
+ * Kept in step with the activity feed so both sections refresh together.
+ * Raised from 20s — this list changes only when someone is stamped, which the
+ * cashier is already looking at the result of.
+ */
+const POLL_MS = 60_000;
 
 function displayName(customer: NearRewardCustomer): string {
   const name = customer.name.trim();
@@ -42,27 +47,7 @@ export function NearRewardSection() {
     }
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    const refresh = () => {
-      if (document.visibilityState === "hidden") return;
-      if (!cancelled) void load();
-    };
-
-    queueMicrotask(() => {
-      if (!cancelled) void load();
-    });
-
-    const pollId = window.setInterval(refresh, POLL_MS);
-    document.addEventListener("visibilitychange", refresh);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(pollId);
-      document.removeEventListener("visibilitychange", refresh);
-    };
-  }, [load]);
+  usePolledRefresh(load, { intervalMs: POLL_MS });
 
   const isLoading = customers === null;
   const visible = expanded ? customers : customers?.slice(0, COLLAPSED_LIMIT);

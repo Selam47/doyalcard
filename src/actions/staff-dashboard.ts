@@ -185,10 +185,11 @@ export type NearRewardResult =
  * counts are a handful of integers too — and each distance gets its own narrow
  * `currentCycleCount: { in: [...] }` query.
  *
- * Two payoffs: Postgres does the filtering against a tiny IN-list (and applies
- * `take`), and issuing one query per distance means the concatenated result is
- * *already* sorted by "fewest stamps remaining" without an in-memory sort that
- * a `take` could have truncated incorrectly.
+ * All of those counts go into ONE query, and the "fewest stamps remaining"
+ * ordering is applied afterwards in memory. The row budget is deliberately
+ * LIMIT × distances rather than LIMIT, so the sort has enough candidates that
+ * a customer 1 stamp away cannot be crowded out by more-recently-seen
+ * customers 2 stamps away before the final slice.
  *
  * A count that two thresholds could claim (e.g. count 5 with thresholds 6 and
  * 7) is assigned to the nearest one only, so nobody appears twice and the
@@ -223,62 +224,70 @@ export async function getCustomersNearReward(): Promise<NearRewardResult> {
 
     if (targetByCount.size === 0) return { success: true, customers: [] };
 
-    const countsByDistance = new Map<number, number[]>();
-    for (const [count, target] of targetByCount) {
-      const bucket = countsByDistance.get(target.remaining);
-      if (bucket) bucket.push(count);
-      else countsByDistance.set(target.remaining, [count]);
-    }
+    /*
+     * ONE query for every distance, not one per distance.
+     *
+     * Every qualifying cycle count — across all distances — goes into a single
+     * IN-list. Postgres still does the filtering against a handful of integers;
+     * we just stop paying a round trip per distance bucket on a page that every
+     * open till re-polls on a timer.
+     *
+     * The over-fetch is the part that matters. Taking only NEAR_REWARD_LIMIT
+     * rows here would reintroduce exactly the bug the per-bucket version was
+     * written to avoid: ordered by recency alone, 25 customers sitting 2 stamps
+     * away could fill the window and push out someone 1 stamp away — the person
+     * the cashier most needs to see. Fetching LIMIT × distances rows and
+     * sorting by `remaining` afterwards keeps the closest customers in, and the
+     * upper bound stays small and fixed.
+     */
+    const allCounts = [...targetByCount.keys()];
+    const distanceCount = new Set(
+      [...targetByCount.values()].map((t) => t.remaining)
+    ).size;
 
-    const distances = [...countsByDistance.keys()].sort((a, b) => a - b);
-
-    const buckets = await Promise.all(
-      distances.map((distance) =>
-        prisma.customer.findMany({
-          where: {
-            ...scope.customerWhere,
-            isActive: true,
-            currentCycleCount: { in: countsByDistance.get(distance)! },
-          },
-          orderBy: { updatedAt: "desc" },
-          take: NEAR_REWARD_LIMIT,
-          select: {
-            id: true,
-            name: true,
-            phone: true,
-            qrUuid: true,
-            currentCycleCount: true,
-          },
-        })
-      )
-    );
+    const rows = await prisma.customer.findMany({
+      where: {
+        ...scope.customerWhere,
+        isActive: true,
+        currentCycleCount: { in: allCounts },
+      },
+      orderBy: { updatedAt: "desc" },
+      take: NEAR_REWARD_LIMIT * Math.max(distanceCount, 1),
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        qrUuid: true,
+        currentCycleCount: true,
+      },
+    });
 
     const customers: NearRewardCustomer[] = [];
 
-    for (const bucket of buckets) {
-      for (const customer of bucket) {
-        if (customers.length >= NEAR_REWARD_LIMIT) break;
+    for (const customer of rows) {
+      const target = targetByCount.get(customer.currentCycleCount);
+      if (!target) continue;
 
-        const target = targetByCount.get(customer.currentCycleCount);
-        if (!target) continue;
-
-        customers.push({
-          id: customer.id,
-          name: customer.name,
-          phone: customer.phone,
-          qrUuid: customer.qrUuid,
-          currentCycleCount: clampCycleCount(
-            customer.currentCycleCount,
-            target.threshold
-          ),
-          nextThreshold: target.threshold,
-          nextRewardName: target.rewardName,
-          remaining: target.remaining,
-        });
-      }
+      customers.push({
+        id: customer.id,
+        name: customer.name,
+        phone: customer.phone,
+        qrUuid: customer.qrUuid,
+        currentCycleCount: clampCycleCount(
+          customer.currentCycleCount,
+          target.threshold
+        ),
+        nextThreshold: target.threshold,
+        nextRewardName: target.rewardName,
+        remaining: target.remaining,
+      });
     }
 
-    return { success: true, customers };
+    // Closest to a reward first. Array.prototype.sort is stable, so customers
+    // at the same distance keep the `updatedAt desc` order Postgres returned.
+    customers.sort((a, b) => a.remaining - b.remaining);
+
+    return { success: true, customers: customers.slice(0, NEAR_REWARD_LIMIT) };
   } catch (error) {
     console.error("[getCustomersNearReward] Error:", error);
 

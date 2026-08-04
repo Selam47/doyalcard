@@ -30,6 +30,7 @@
 import "server-only";
 
 import { prisma } from "@/lib/prisma";
+import type { Prisma } from "@/generated/prisma/client";
 import { getStaffPrincipal, type StaffPrincipal } from "@/lib/staff-guard";
 
 /**
@@ -50,13 +51,43 @@ const CARD_SELECT = {
   createdAt: true,
   branch: { select: { name: true, location: true } },
   rewards: {
-    orderBy: { createdAt: "desc" },
+    /*
+     * PENDING FIRST, then newest — and the order of these two keys matters.
+     *
+     * This relation used to be unbounded, which made the hottest read in the
+     * app (/card/[uuid], /customer/dashboard, /staff/customer/[uuid]) grow
+     * without limit for a regular customer. It is bounded now, but a naive
+     * `orderBy: { createdAt: "desc" }, take: N` would have been WORSE than the
+     * problem it fixed: `pendingRewards` is derived by FILTERING this array
+     * (CustomerCardView.tsx, and staff/customer/[uuid]/page.tsx which feeds
+     * StaffActionPanel's claim list), so an old unclaimed reward that fell out
+     * of the newest-N window would silently become unclaimable at the till —
+     * the customer earned it, and the cashier simply could not see it.
+     *
+     * Sorting on `status` first prevents that structurally. `RewardStatus` is
+     * declared PENDING, CLAIMED, EXPIRED (prisma/schema.prisma) and Postgres
+     * orders enum values by DECLARATION order, so ascending puts every PENDING
+     * ahead of every CLAIMED/EXPIRED. The `take` can therefore only ever
+     * truncate old claimed history — never something still owed to a customer.
+     *
+     * ⚠ Reordering the RewardStatus enum, or inserting a value before PENDING
+     * with ALTER TYPE ... BEFORE, silently breaks that guarantee.
+     *
+     * Backed by @@index([customerId, status]). The UI already shows only
+     * `claimedRewards.slice(0, 3)`, so nothing visible is lost.
+     */
+    orderBy: [{ status: "asc" }, { createdAt: "desc" }],
+    take: 50,
     include: {
       rule: true,
       order: { select: { createdAt: true } },
     },
   },
-} as const;
+  // `satisfies`, not `as const`: the multi-key `orderBy` above is an array, and
+  // `as const` would make it `readonly`, which Prisma's generated input types
+  // reject. `satisfies` still validates every key against the real schema and
+  // still preserves the literal types that `CardCustomer` is inferred from.
+} satisfies Prisma.CustomerSelect;
 
 async function findCardCustomer(uuid: string) {
   return prisma.customer.findUnique({

@@ -301,7 +301,13 @@ export async function getCustomerById(id: string) {
         createdAt: true,
         branch: { select: { name: true, location: true } },
         rewards: {
-          orderBy: { createdAt: "desc" },
+          // PENDING first, then newest, bounded at 50 — see the long note on
+          // CARD_SELECT in src/lib/card-access.ts. Sorting on `status` before
+          // `createdAt` is what stops the `take` from ever truncating a reward
+          // the customer has earned but not yet claimed; only old claimed
+          // history can fall out of the window. Keep the two in step.
+          orderBy: [{ status: "asc" }, { createdAt: "desc" }],
+          take: 50,
           include: {
             rule: true,
             order: { select: { createdAt: true } },
