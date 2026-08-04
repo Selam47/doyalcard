@@ -1,15 +1,5 @@
 "use client";
 
-// src/app/customer/dashboard/error.tsx
-//
-// Customer-facing, so it follows the same rules as /card/[uuid]/error.tsx:
-// branded dark-green styling, no internal strings, no link into any staff
-// surface, and `error.digest` only.
-//
-// Distinct from the card boundary in one way — the customer is signed in here,
-// so a second escape hatch to the login screen is useful when the failure is a
-// session problem rather than a transient one.
-
 import { useEffect } from "react";
 import Link from "next/link";
 

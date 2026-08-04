@@ -1,36 +1,3 @@
-// src/app/card/[uuid]/page.tsx
-//
-// PUBLIC-FACING CARD — NO LOGIN, STRICTLY READ-ONLY.
-//
-// This route is PUBLIC on purpose and must stay that way. A customer points a
-// raw phone camera at the QR code on their own card; the camera opens a fresh,
-// cookie-less tab straight at this URL. If this page requires a session, that
-// scan lands on a login screen and the core flow of the product is broken.
-// So: NO auth() call, NO getStaffPrincipal(), NO customer-session read, and no
-// redirect to /login or /customer/login anywhere below. The only exit other
-// than rendering is notFound(), for a UUID that matches no customer.
-//
-// It is also OUTSIDE the app's session machinery by design. Middleware lets
-// /card through before it consults a session (CUSTOMER_PAGE_PREFIXES), and
-// TabSessionGuard deliberately does not list /card among its protected
-// prefixes — a raw scan is always a "fresh tab", so guarding it there would
-// bounce every single scan to login. Auth fixes for the staff/admin layouts,
-// customer OTP login or tab-session invalidation must not be extended here.
-//
-// STRICTLY READ-ONLY: there is NO import of StaffActionPanel,
-// DeleteCustomerButton or any Server Action, so no combination of session,
-// role, cookie or crafted URL can make a mutating control appear. "+1 Sipariş",
-// "-1 Damga" and "Müşteriyi Sil" live only on /staff/customer/[uuid], behind
-// the middleware-protected /staff prefix.
-//
-// It renders NO navigation toward the staff terminal either — not even for an
-// authenticated ADMIN. Nothing here varies by viewer; the page never learns who
-// is looking. Staff reach the till by signing into the staff portal and using
-// the in-app scanner (/staff), which rewrites the decoded URL to
-// /staff/customer/<uuid> itself.
-//
-// The UUID is the credential: v4, unguessable, never listed or searchable, and
-// the projection in card-access.ts is the privacy boundary — do not widen it.
 import type { Metadata } from "next";
 
 import { notFound } from "next/navigation";
@@ -91,12 +58,8 @@ export default async function CardPage({ params }: Props) {
           maxStamps={maxStamps}
         />
 
-        {/*
-          NOTHING follows the card. Do not add a staff shortcut here — not
-          behind a role check, not behind a feature flag. This page is the
-          landing spot for a raw camera scan, and it stays a read-only dead end
-          for every viewer.
-        */}
+        {
+       }
       </main>
     </div>
   );

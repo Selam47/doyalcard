@@ -10,21 +10,23 @@ import { isValidE164, normalizePhoneToE164 } from "@/lib/phone";
 import { isDbConnectionError } from "@/lib/db-errors";
 import { getCustomerSession } from "@/lib/customer-session";
 import { revalidateStampSurfaces } from "@/lib/revalidate";
+import { lookupCustomerForStaffByPhone } from "@/lib/customer-lookup";
+import {
+  CustomerNameSchema,
+  CustomerPhoneInputSchema,
+  KvkkConsentSchema,
+} from "@/lib/customer-validation";
 
+/*
+ * The three field rules now live in src/lib/customer-validation.ts because the
+ * customer's OWN self-registration (via the OTP callback) has to apply exactly
+ * the same ones. Two hand-written copies of "KVKK consent must be literally
+ * true" is how one door ends up creating rows the other door would refuse.
+ */
 const RegisterSchema = z.object({
-  name: z
-    .string()
-    .min(2, "Ad en az 2 karakter olmalı")
-    .max(100, "Ad en fazla 100 karakter olabilir")
-    .trim(),
-  phone: z
-    .string()
-    .min(10, "Geçerli bir telefon numarası girin")
-    .max(20, "Geçerli bir telefon numarası girin")
-    .regex(/^[+]?[\d\s()-]+$/, "Geçerli bir telefon numarası formatı girin"),
-  kvkkConsent: z.boolean().refine((val) => val === true, {
-  message: "KVKK onayı zorunludur",
-}),
+  name: CustomerNameSchema,
+  phone: CustomerPhoneInputSchema,
+  kvkkConsent: KvkkConsentSchema,
 });
 
 export type RegisterResult =
@@ -239,41 +241,18 @@ export async function deleteCustomer(
  *
  * `phone` is UNIQUE, so normalizing the input first and asking for that one row
  * makes the result provably the number that was typed, or nothing at all.
+ *
+ * The normalize + exact-match shape itself now lives in
+ * `src/lib/customer-lookup.ts`, shared with the customer login screen's pre-OTP
+ * existence check. The guard stays HERE: the shared module deliberately grants
+ * nothing, so every caller keeps its own authorization.
  */
 export async function searchCustomerByPhone(phone: string) {
   const guard = await authorizeStaff();
   if (!guard.ok) return null;
 
-  if (!phone || typeof phone !== "string") return null;
-
-  const normalized = normalizePhoneToE164(phone);
-  if (!normalized) return null;
-
-  try {
-    const customer = await prisma.customer.findUnique({
-      where: { phone: normalized },
-      select: {
-        id: true,
-        name: true,
-        phone: true,
-        qrUuid: true,
-        currentCycleCount: true,
-        lifetimeCount: true,
-        createdAt: true,
-        branch: { select: { name: true } },
-        rewards: {
-          where: { status: "PENDING" },
-          include: { rule: true },
-          orderBy: { createdAt: "desc" },
-        },
-      },
-    });
-
-    return customer;
-  } catch (error) {
-    console.error("[searchCustomerByPhone] Error:", error);
-    return null;
-  }
+  const result = await lookupCustomerForStaffByPhone(phone);
+  return result.status === "found" ? result.customer : null;
 }
 
 /**

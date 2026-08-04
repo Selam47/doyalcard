@@ -29,6 +29,12 @@ import {
 } from "firebase/auth";
 import { auth, getFirebaseConfigIssues } from "@/lib/firebase";
 import { normalizePhoneToE164, isValidE164 } from "@/lib/phone";
+import {
+  CustomerNameSchema,
+  KVKK_REQUIRED_MESSAGE,
+} from "@/lib/customer-validation";
+import { CustomerNotRegisteredPanel } from "@/components/customer/CustomerNotRegisteredPanel";
+import { CustomerRegisterStep } from "@/components/customer/CustomerRegisterStep";
 import { toast } from "sonner";
 
 const COUNTRY_CODES = [
@@ -64,14 +70,38 @@ function withTimeout<T>(promise: Promise<T>): Promise<T> {
 }
 
 /**
- * "phone" → "otp" → (only when the backend asks for it) "consent".
+ * Two routes through this form, decided BEFORE any SMS is spent:
  *
- * The consent step exists because /api/customer/auth refuses to CREATE a
- * Customer row until KVKK consent has been given explicitly, mirroring the
- * z.refine on the staff-side registerCustomer action. It is reached only on a
- * 428 response, so a returning, already-consented customer never sees it.
+ *   returning customer   "phone" → "otp" → dashboard
+ *   new customer         "phone" → "notfound" → "register" → "otp" → dashboard
+ *
+ * The fork is `/api/customer/exists`. Previously there was no fork at all: the
+ * OTP went out unconditionally and an unknown number was only discovered AFTER
+ * verification, as a 428 from /api/customer/auth. Every other non-2xx status on
+ * that path (503, 500, an unparseable body) fell through to a thrown Error in
+ * `submitSession` and surfaced as the opaque "Doğrulama başarısız." — so "you
+ * have no account" and "something broke" looked identical, and when the 428 DID
+ * arrive the row was created with the placeholder name "Müşteri" because no
+ * name had ever been asked for.
+ *
+ * "consent" is now a LEGACY-ONLY step. It is still reached on a 428 for a row
+ * that predates the consent requirement (`kvkkConsent: false`), which needs a
+ * backfill but not a registration. A brand-new customer sends name + consent
+ * together from the "register" step, so they never see it.
  */
-type Step = "phone" | "otp" | "consent";
+type Step = "phone" | "notfound" | "register" | "otp" | "consent";
+
+/**
+ * A registration that has been filled in but NOT yet committed. Its presence is
+ * what tells `verifyCode` to create an account rather than just sign in, and
+ * what sends a back-navigation to the register form instead of the phone entry.
+ *
+ * Nothing here is written server-side until the OTP verifies — that is the
+ * whole reason it is held in the client for the length of the OTP step.
+ */
+interface PendingRegistration {
+  name: string;
+}
 
 interface ExistingIdentity {
   name: string;
@@ -147,6 +177,19 @@ export function CustomerPhoneLoginForm({
   const [loading, setLoading] = useState(false);
   const [resendCountdown, setResendCountdown] = useState(0);
   const [kvkkChecked, setKvkkChecked] = useState(false);
+  /** Name typed on the self-registration step. Never sent until OTP succeeds. */
+  const [registerName, setRegisterName] = useState("");
+  /**
+   * The normalized number `/api/customer/exists` positively reported as having
+   * NO account, echoed on the "not registered" screen so a typo is obvious.
+   */
+  const [checkedPhone, setCheckedPhone] = useState("");
+  /**
+   * Non-null only between "register form submitted" and "OTP verified".
+   * See {@link PendingRegistration}.
+   */
+  const [pendingRegistration, setPendingRegistration] =
+    useState<PendingRegistration | null>(null);
 
   const confirmationRef = useRef<ConfirmationResult | null>(null);
   /**
@@ -171,7 +214,7 @@ export function CustomerPhoneLoginForm({
    * "SMS gönderilemedi" toast. That is the reported bug's most common shape.
    *
    * During a send the callbacks now only INVALIDATE the verifier; the actual
-   * teardown happens in handleSendOtp's own catch/finally, after Firebase has
+   * teardown happens in sendOtp's own catch, after Firebase has
    * finished with it.
    */
   const sendInFlightRef = useRef(false);
@@ -324,7 +367,7 @@ export function CustomerPhoneLoginForm({
     // See sendInFlightRef: tearing the verifier down from under an in-flight
     // signInWithPhoneNumber is what turns a recoverable challenge into an
     // unmapped auth/internal-error. While a send is running these callbacks
-    // only note the problem; handleSendOtp disposes of the verifier itself.
+    // only note the problem; sendOtp disposes of the verifier itself.
     const disposeUnlessSending = (reason: string) => {
       console.warn(`[reCAPTCHA] ${reason}`);
       if (sendInFlightRef.current) return;
@@ -403,7 +446,13 @@ export function CustomerPhoneLoginForm({
     }, 1000);
   }, []);
 
-  const handleGoBackToPhone = useCallback(() => {
+  /**
+   * Tear down the OTP ATTEMPT itself — verifier, confirmation, token, timers —
+   * without touching anything the customer typed. Split out so a self-
+   * registering customer whose code expired is not also stripped of the name
+   * and consent they already gave.
+   */
+  const resetOtpAttempt = useCallback(() => {
     destroyRecaptcha();
     confirmationRef.current = null;
     idTokenRef.current = null;
@@ -412,15 +461,40 @@ export function CustomerPhoneLoginForm({
     verifyingRef.current = false;
     attemptedCodeRef.current = null;
     setResendCountdown(0);
-    setKvkkChecked(false);
     setSentPhone("");
-    setStep("phone");
     applyOtpValue("");
     // Firebase istemcisinde asılı kalmış kullanıcıyı da düşür: aksi halde
     // yarıda bırakılan bir KVKK adımından sonra bir sonraki SMS isteği
     // hâlâ açık bir oturumun üzerine biniyor. Best-effort.
     void signOut(auth).catch(() => {});
   }, [destroyRecaptcha, applyOtpValue]);
+
+  /**
+   * Full restart: back to phone entry, discarding any half-finished
+   * registration. Used by "Numarayı Değiştir" and by the legacy consent step's
+   * "Vazgeç" — both are statements that the current attempt is abandoned.
+   */
+  const handleGoBackToPhone = useCallback(() => {
+    resetOtpAttempt();
+    setPendingRegistration(null);
+    setKvkkChecked(false);
+    setRegisterName("");
+    setCheckedPhone("");
+    setStep("phone");
+  }, [resetOtpAttempt]);
+
+  /**
+   * Back to whichever screen the customer came FROM.
+   *
+   * A self-registering customer whose code expired must land on their filled-in
+   * registration form, not on an empty phone field — dumping them back to the
+   * start would silently discard the name and the KVKK tick and make an expired
+   * SMS feel like a rejection.
+   */
+  const handleGoBackToEntry = useCallback(() => {
+    resetOtpAttempt();
+    setStep(pendingRegistration ? "register" : "phone");
+  }, [resetOtpAttempt, pendingRegistration]);
 
   /**
    * Exchange the verified Firebase ID token for the server session cookie.
@@ -433,15 +507,25 @@ export function CustomerPhoneLoginForm({
   const submitSession = useCallback(
     async (
       idToken: string,
-      consent: boolean
+      consent: boolean,
+      /**
+       * Only ever sent alongside consent, and only by the self-registration
+       * path. The backend uses it on its CREATE branch exclusively — a
+       * returning customer's name is never overwritten from here.
+       */
+      name?: string | null
     ): Promise<"ok" | "consent-required"> => {
+      const payload: Record<string, unknown> = { idToken };
+      if (consent) {
+        payload.kvkkConsent = true;
+        if (name) payload.name = name;
+      }
+
       const res = await withTimeout(
         fetch("/api/customer/auth", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(
-            consent ? { idToken, kvkkConsent: true } : { idToken }
-          ),
+          body: JSON.stringify(payload),
         })
       );
 
@@ -484,7 +568,7 @@ export function CustomerPhoneLoginForm({
       }
       if (!confirmationRef.current) {
         toast.error("Oturum süresi doldu. Lütfen yeni kod isteyin.");
-        handleGoBackToPhone();
+        handleGoBackToEntry();
         return;
       }
 
@@ -501,11 +585,33 @@ export function CustomerPhoneLoginForm({
         const idToken = await withTimeout(credential.user.getIdToken());
         idTokenRef.current = idToken;
 
-        const outcome = await submitSession(idToken, false);
+        /*
+         * THE ACCOUNT IS CREATED HERE AND NOWHERE EARLIER.
+         *
+         * The register form only collected data and asked Firebase for an SMS;
+         * no row existed until this line. So a customer who abandons the OTP
+         * step, mistypes the code, or lets it expire leaves nothing behind —
+         * which is exactly requirement "do not create the record until the code
+         * verifies", and also what makes the number provably theirs.
+         */
+        const outcome = pendingRegistration
+          ? await submitSession(idToken, true, pendingRegistration.name)
+          : await submitSession(idToken, false);
 
-        if (outcome === "consent-required") {
-          // Phone verified, but no Customer row exists (or the existing one
-          // predates the consent requirement). Ask before anything is stored.
+        if (outcome === "ok") {
+          setPendingRegistration(null);
+        } else if (pendingRegistration) {
+          /*
+           * We just sent `kvkkConsent: true`, so a 428 here means the backend
+           * did not accept it — a stale token, or a body that never arrived.
+           * Do NOT fall through to the legacy consent screen: it would ask for
+           * a consent that was already given and drop the name on the way.
+           */
+          toast.error("Kayıt tamamlanamadı. Lütfen tekrar deneyin.");
+          handleGoBackToEntry();
+        } else {
+          // Legacy path: a row that predates the consent requirement. The phone
+          // is verified but nothing is stored until consent arrives.
           setKvkkChecked(false);
           setStep("consent");
         }
@@ -518,7 +624,7 @@ export function CustomerPhoneLoginForm({
           setTimeout(() => otpInputRef.current?.focus(), 50);
         } else if (errCode === "auth/code-expired" || errCode === "auth/session-expired") {
           toast.error("Kodun süresi doldu. Lütfen yeni kod isteyin.");
-          handleGoBackToPhone();
+          handleGoBackToEntry();
         } else if (errCode === "auth/timeout") {
           toast.error("Doğrulama zaman aşımına uğradı. Bağlantınızı kontrol edip tekrar deneyin.");
         } else {
@@ -529,7 +635,7 @@ export function CustomerPhoneLoginForm({
         setLoading(false);
       }
     },
-    [handleGoBackToPhone, applyOtpValue, submitSession]
+    [handleGoBackToEntry, applyOtpValue, submitSession, pendingRegistration]
   );
 
   /** Consent step submit — the only place `kvkkConsent: true` is ever sent. */
@@ -660,51 +766,116 @@ export function CustomerPhoneLoginForm({
     void verifyCode(otp);
   }, [otp, step, loading, verifyCode]);
 
-  async function handleSendOtp(e: React.FormEvent) {
-    e.preventDefault();
-
-    /*
-     * THE canonical normalizer — the SAME one `registerCustomer` (staff side)
-     * and `/api/customer/auth` (OTP callback) use. This form previously called
-     * `toE164`, a looser helper that only glued the country code onto whatever
-     * digits were typed:
-     *
-     *   • it applied no national-length rule, so a half-entered "916 28 63"
-     *     became "+909162863" — a string the generic E164 regex happily
-     *     accepts, sent straight to Firebase, which rejects it;
-     *   • it produced a spelling that could differ from the one the cashier's
-     *     registration stored, so even a successful OTP resolved to a
-     *     different (or missing) Customer row.
-     *
-     * Funnelling every surface through one normalizer is what makes "the number
-     * the staff registered" and "the number the customer types" the same
-     * string, byte for byte.
-     */
+  /**
+   * Resolve what the customer typed into THE canonical E.164 spelling.
+   *
+   * The SAME normalizer `registerCustomer` (staff side), `/api/customer/auth`
+   * (OTP callback) and `/api/customer/exists` use. This form previously called
+   * `toE164`, a looser helper that only glued the country code onto whatever
+   * digits were typed:
+   *
+   *   • it applied no national-length rule, so a half-entered "916 28 63"
+   *     became "+909162863" — a string the generic E164 regex happily
+   *     accepts, sent straight to Firebase, which rejects it;
+   *   • it produced a spelling that could differ from the one the cashier's
+   *     registration stored, so even a successful OTP resolved to a
+   *     different (or missing) Customer row.
+   *
+   * Funnelling every surface through one normalizer is what makes "the number
+   * the staff registered", "the number the customer types" and "the number the
+   * existence check looks up" the same string, byte for byte. If they could
+   * differ, the new "no account found" screen would be shown to registered
+   * customers.
+   */
+  function resolvePhone(): string | null {
     const fullPhone = normalizePhoneToE164(phoneNumber, countryCode);
 
     if (!fullPhone || !isValidE164(fullPhone)) {
       toast.error(
         "Geçerli bir telefon numarası girin (örn: 0530 123 45 67 veya 530 123 45 67)."
       );
-      return;
+      return null;
     }
 
-    /*
-     * Yapılandırma eksikse Firebase'i hiç çağırmıyoruz. Aksi halde hata,
-     * "SMS gönderilemedi" gibi genel bir toast'a dönüşüyor ve gerçek sebep —
-     * Vercel'de tanımlanmamış (ya da eklendikten sonra yeniden deploy
-     * edilmemiş) bir NEXT_PUBLIC_FIREBASE_* değişkeni — hiç görünmüyordu.
-     */
+    return fullPhone;
+  }
+
+  /**
+   * Yapılandırma eksikse Firebase'i hiç çağırmıyoruz. Aksi halde hata,
+   * "SMS gönderilemedi" gibi genel bir toast'a dönüşüyor ve gerçek sebep —
+   * Vercel'de tanımlanmamış (ya da eklendikten sonra yeniden deploy
+   * edilmemiş) bir NEXT_PUBLIC_FIREBASE_* değişkeni — hiç görünmüyordu.
+   */
+  function firebaseConfigOk(): boolean {
     const configIssues = getFirebaseConfigIssues();
-    if (configIssues.length > 0) {
-      console.error("[OTP send] Firebase yapılandırması eksik:", configIssues);
-      toast.error(
-        "SMS servisi yapılandırılmamış. Lütfen yönetici ile iletişime geçin."
-      );
-      return;
-    }
+    if (configIssues.length === 0) return true;
 
-    setLoading(true);
+    console.error("[OTP send] Firebase yapılandırması eksik:", configIssues);
+    toast.error(
+      "SMS servisi yapılandırılmamış. Lütfen yönetici ile iletişime geçin."
+    );
+    return false;
+  }
+
+  /**
+   * "Does this number already have an account?" — asked BEFORE an SMS is spent.
+   *
+   * Three outcomes, and the third is the one that matters most: a check that
+   * could not RUN is never reported as "no account". Doing so would tell a
+   * registered customer to create a duplicate that the UNIQUE phone index would
+   * then refuse, stranding them on a screen with no way forward. The endpoint
+   * answers 503 in that case and we surface a retry.
+   */
+  async function checkExistingAccount(
+    fullPhone: string
+  ): Promise<"exists" | "missing" | "failed"> {
+    try {
+      const res = await withTimeout(
+        fetch("/api/customer/exists", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          cache: "no-store",
+          body: JSON.stringify({ phone: fullPhone }),
+        })
+      );
+
+      const data = (await res.json().catch(() => ({}))) as {
+        exists?: unknown;
+        error?: string;
+      };
+
+      // A 200 whose body we cannot read is NOT a "no account" answer either.
+      if (res.ok && typeof data.exists === "boolean") {
+        return data.exists ? "exists" : "missing";
+      }
+
+      console.error(
+        `[account check] status=${res.status} error=${data.error ?? "(yok)"}`
+      );
+      toast.error(
+        data.error ?? "Hesap kontrolü yapılamadı. Lütfen tekrar deneyin."
+      );
+      return "failed";
+    } catch (error) {
+      console.error("[account check]", error);
+      toast.error(
+        "Hesap kontrolü yapılamadı. Bağlantınızı kontrol edip tekrar deneyin."
+      );
+      return "failed";
+    }
+  }
+
+  /**
+   * Send the SMS and move to the OTP step. Shared verbatim by both paths —
+   * the returning customer and the self-registering one — so a Firebase failure
+   * is reported with the same real, code-carrying message either way instead of
+   * one path crashing and the other toasting.
+   *
+   * Returns false (never throws) when no code went out; callers decide what the
+   * customer sees next. Does not manage `loading`: the caller owns that, since
+   * for the login path the spinner also covers the existence check.
+   */
+  async function sendOtp(fullPhone: string): Promise<boolean> {
     try {
       /*
        * OTURUM TEMİZLİĞİ — Firebase'e dokunmadan ÖNCE.
@@ -771,6 +942,7 @@ export function CustomerPhoneLoginForm({
       startCountdown();
       toast.success("Doğrulama kodu gönderildi!");
       setTimeout(() => otpInputRef.current?.focus(), 100);
+      return true;
     } catch (err: unknown) {
       sendInFlightRef.current = false;
       const code = (err as { code?: string }).code;
@@ -807,7 +979,7 @@ export function CustomerPhoneLoginForm({
       if ((err as { name?: string }).name === "AbortError") {
         // Bu deneme daha yenisi tarafından geçersiz kılındı (ör. çift tık).
         // Kullanıcıya gösterilecek bir hata yok; yeni deneme zaten yolda.
-        return;
+        return false;
       }
 
       if (code === "auth/operation-not-allowed") {
@@ -876,6 +1048,104 @@ export function CustomerPhoneLoginForm({
             : "SMS gönderilemedi. Lütfen tekrar deneyin."
         );
       }
+
+      /*
+       * Explicit failure, always. The two callers below stay on the screen the
+       * customer is already looking at, so a failed send is a retry rather than
+       * a dead end — including on the registration path, where silently
+       * advancing to an OTP screen with no code on its way would look like the
+       * account was created.
+       */
+      return false;
+    }
+  }
+
+  /**
+   * STEP 1 — phone entry. This is the fork.
+   *
+   * The existence check runs BEFORE Firebase is touched, so an unregistered
+   * number costs no SMS and lands on a real "kayıtlı hesap bulunamadı" screen
+   * instead of the opaque verification failure it used to produce.
+   */
+  async function handlePhoneSubmit(e: React.FormEvent) {
+    e.preventDefault();
+
+    const fullPhone = resolvePhone();
+    if (!fullPhone) return;
+    if (!firebaseConfigOk()) return;
+
+    setLoading(true);
+    try {
+      const outcome = await checkExistingAccount(fullPhone);
+
+      // The check already toasted a real, actionable message. Stay put.
+      if (outcome === "failed") return;
+
+      if (outcome === "missing") {
+        // Nothing is created here and nothing is assumed — the customer is
+        // shown the state and chooses. Explicitly clear any stale pending
+        // registration so this number cannot inherit an earlier attempt's name.
+        setPendingRegistration(null);
+        setCheckedPhone(fullPhone);
+        setStep("notfound");
+        return;
+      }
+
+      // Known customer: the path below is byte-for-byte the one that already
+      // worked — same verifier, same signInWithPhoneNumber, same OTP step.
+      await sendOtp(fullPhone);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  /** "Kayıt Ol" from the not-registered screen. Phone stays as typed. */
+  function handleStartRegistration() {
+    setRegisterName("");
+    setKvkkChecked(false);
+    setStep("register");
+  }
+
+  /**
+   * STEP 2 (new customers) — registration form submit.
+   *
+   * Deliberately does NOT create the Customer row: it validates, remembers the
+   * name in `pendingRegistration`, and asks Firebase for an SMS. Phone
+   * ownership is proved first; `verifyCode` commits afterwards.
+   */
+  async function handleRegisterSubmit(e: React.FormEvent) {
+    e.preventDefault();
+
+    // The SAME schema `registerCustomer` (staff side) applies, imported rather
+    // than re-typed — and re-checked server-side by /api/customer/auth, because
+    // a Route Handler is public and this check is only a courtesy.
+    const parsedName = CustomerNameSchema.safeParse(registerName);
+    if (!parsedName.success) {
+      toast.error(parsedName.error.issues[0]?.message ?? "Geçerli bir ad girin.");
+      return;
+    }
+
+    // Mirrors KvkkConsentSchema's `refine(val === true)`. Consent must be an
+    // explicit affirmative act; there is no path that infers it.
+    if (!kvkkChecked) {
+      toast.error(KVKK_REQUIRED_MESSAGE);
+      return;
+    }
+
+    const fullPhone = resolvePhone();
+    if (!fullPhone) return;
+    if (!firebaseConfigOk()) return;
+
+    setLoading(true);
+    try {
+      setPendingRegistration({ name: parsedName.data });
+      const sent = await sendOtp(fullPhone);
+      if (!sent) {
+        // No code went out, so there is nothing to verify and nothing to
+        // commit. Drop the pending registration rather than leave a name
+        // attached to a future, unrelated OTP.
+        setPendingRegistration(null);
+      }
     } finally {
       setLoading(false);
     }
@@ -898,7 +1168,9 @@ export function CustomerPhoneLoginForm({
 
   function handleResend() {
     if (resendCountdown > 0) return;
-    handleGoBackToPhone();
+    // Back to the entry screen the customer came from — a self-registering
+    // customer keeps their name and consent, and simply re-submits.
+    handleGoBackToEntry();
   }
 
   const activeCell = Math.min(otp.length, OTP_LENGTH - 1);
@@ -980,7 +1252,7 @@ export function CustomerPhoneLoginForm({
           </button>
         </div>
       ) : step === "phone" ? (
-        <form onSubmit={handleSendOtp} className="space-y-5">
+        <form onSubmit={handlePhoneSubmit} className="space-y-5">
           <div className="space-y-2">
             <label
               htmlFor="phone-input"
@@ -1042,11 +1314,43 @@ export function CustomerPhoneLoginForm({
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
                 </svg>
-                Kod Gönder
+                Devam Et
               </>
             )}
           </button>
         </form>
+      ) : step === "notfound" ? (
+        /*
+          Reached ONLY on a positive `{ exists: false }` from the backend — a
+          lookup that merely failed stays on the phone step with a retry, so a
+          registered customer is never told to create a second account.
+        */
+        <CustomerNotRegisteredPanel
+          phone={checkedPhone}
+          onRegister={handleStartRegistration}
+          onChangePhone={handleGoBackToPhone}
+        />
+      ) : step === "register" ? (
+        /*
+          Customer SELF-registration. Submitting only sends an SMS; the Customer
+          row is created by /api/customer/auth after the code verifies. Kept
+          entirely separate from the staff-side registerCustomer action, which
+          is authorizeStaff-gated and stamps the cashier's branchId.
+        */
+        <CustomerRegisterStep
+          countryCodes={COUNTRY_CODES}
+          countryCode={countryCode}
+          onCountryCodeChange={setCountryCode}
+          phoneNumber={phoneNumber}
+          onPhoneNumberChange={setPhoneNumber}
+          name={registerName}
+          onNameChange={setRegisterName}
+          kvkkChecked={kvkkChecked}
+          onKvkkChange={setKvkkChecked}
+          loading={loading}
+          onSubmit={handleRegisterSubmit}
+          onBack={handleGoBackToPhone}
+        />
       ) : step === "otp" ? (
         <form onSubmit={handleVerifySubmit} className="space-y-6">
           <div className="space-y-3">
@@ -1056,10 +1360,10 @@ export function CustomerPhoneLoginForm({
               </label>
               <button
                 type="button"
-                onClick={handleGoBackToPhone}
+                onClick={handleGoBackToEntry}
                 className="text-xs text-green-300 hover:text-white transition-colors"
               >
-                ← Numarayı Değiştir
+                {pendingRegistration ? "← Bilgileri Düzenle" : "← Numarayı Değiştir"}
               </button>
             </div>
 
@@ -1069,6 +1373,21 @@ export function CustomerPhoneLoginForm({
               </span>{" "}
               numarasına gönderilen 6 haneli kodu girin.
             </p>
+
+            {pendingRegistration && (
+              /*
+                Says out loud what the code is FOR. The account does not exist
+                yet and will not exist unless this code verifies — a customer
+                who closes the page here leaves no record behind.
+              */
+              <p className="text-xs text-green-300/70">
+                Kod doğrulandığında{" "}
+                <span className="text-white font-medium">
+                  {pendingRegistration.name}
+                </span>{" "}
+                adına sadakat kartınız oluşturulacak.
+              </p>
+            )}
 
             {/*
               ONE real input drives SIX painted cells.

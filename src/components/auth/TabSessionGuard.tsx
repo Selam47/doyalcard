@@ -1,23 +1,6 @@
 "use client";
 
-// src/components/auth/TabSessionGuard.tsx
-//
-// "Sekme kapanınca oturum bitsin" politikasının client tarafı.
-//
-// NEDEN sessionStorage'a oturum KOYMUYORUZ:
-// Oturum HTTP-only bir cookie ve doğrulaması sunucuda yapılıyor. Sunucu
-// sessionStorage'ı okuyamaz; token'ı oraya taşımak onu JS'ten okunabilir —
-// yani XSS ile çalınabilir — hale getirir ve /card, /staff, /admin sayfalarının
-// server-side guard'larını çalışamaz duruma sokar. sessionStorage'ı bu yüzden
-// sadece bir İŞARET (marker) olarak kullanıyoruz, veri deposu olarak değil.
-//
-// NEDEN `beforeunload` KULLANMIYORUZ:
-// F5 ve her sayfa geçişinde de tetiklenir, mobilde sekme kapanışında çoğu zaman
-// hiç tetiklenmez, ve unload sırasında atılan istek iptal edilebilir. Kapanışı
-// yakalamak yerine tersini yapıyoruz: yeni bir sekmenin AÇILDIĞINI tespit
-// ediyoruz. sessionStorage sekme başına izoledir ve sekme kapanınca silinir —
-// yani "işaret yoksa bu taze bir sekmedir" güvenilir bir testtir ve F5'i yanlış
-// pozitif üretmez (yenilemede sessionStorage korunur).
+
 
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";

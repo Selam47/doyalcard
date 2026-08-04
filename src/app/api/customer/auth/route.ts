@@ -17,6 +17,14 @@ import {
 } from "@/lib/customer-session";
 import { isValidE164, normalizePhoneToE164 } from "@/lib/phone";
 import { isDbConnectionError } from "@/lib/db-errors";
+import { CustomerNameSchema } from "@/lib/customer-validation";
+
+/**
+ * Fallback display name for a row created by a customer who gave consent but no
+ * name — i.e. the legacy 428 consent screen, which never collected one. The
+ * self-registration flow always sends a name, so new rows should not need this.
+ */
+const PLACEHOLDER_NAME = "Müşteri";
 
 const FIREBASE_JWKS = createRemoteJWKSet(
   new URL(
@@ -43,16 +51,46 @@ export async function POST(req: NextRequest) {
    * truthy coercion here would be the same defect this fix exists to remove.
    */
   let kvkkConsent = false;
+  /**
+   * The name supplied by the CUSTOMER SELF-REGISTRATION flow. Optional: the
+   * returning-customer path sends none, and the legacy consent-backfill path
+   * has none to send.
+   *
+   * It is only ever used on the CREATE branch. An existing row's name is never
+   * overwritten from here — otherwise anyone who can pass OTP for a number
+   * could rewrite the name a cashier registered, and a stale client retry could
+   * silently rename a live account.
+   */
+  let rawName: unknown;
 
   try {
     const body = (await req.json()) as {
       idToken?: string;
       kvkkConsent?: unknown;
+      name?: unknown;
     };
     idToken = body.idToken;
     kvkkConsent = body.kvkkConsent === true;
+    rawName = body.name;
   } catch {
     return NextResponse.json({ error: "Geçersiz istek gövdesi" }, { status: 400 });
+  }
+
+  /*
+   * Validated with the SAME schema the staff-side registerCustomer uses. The
+   * client already checked it, but a Route Handler is a public endpoint and the
+   * client's check is a convenience, not a control.
+   */
+  let name: string | null = null;
+  if (rawName !== undefined && rawName !== null && rawName !== "") {
+    const parsedName = CustomerNameSchema.safeParse(rawName);
+    if (!parsedName.success) {
+      return NextResponse.json(
+        { error: parsedName.error.issues[0]?.message ?? "Geçersiz ad" },
+        { status: 400 }
+      );
+    }
+    name = parsedName.data;
   }
 
   if (!idToken || typeof idToken !== "string") {
@@ -136,10 +174,19 @@ export async function POST(req: NextRequest) {
       // P2002. The create branch records the consent that just authorised the
       // row; the update branch backfills a row left unconsented by the old
       // code path.
+      //
+      // `qrUuid` is deliberately ABSENT from the create payload. It is
+      // `@unique @default(uuid()) @db.Uuid` in the schema, so Prisma mints it —
+      // exactly as `registerCustomer` (staff side) relies on. Generating one
+      // here in application code would be a second source of card identities
+      // and the first chance for the two to disagree.
+      //
+      // `update` still touches only the consent columns: a returning customer's
+      // name belongs to the row, not to whatever the client last posted.
       customer = await prisma.customer.upsert({
         where: { phone: normalised },
         create: {
-          name: "Müşteri",
+          name: name ?? PLACEHOLDER_NAME,
           phone: normalised,
           kvkkConsent: true,
           kvkkConsentAt: consentedAt,

@@ -1,17 +1,5 @@
 "use client";
 
-// src/app/global-error.tsx
-//
-// Last line of defence: this catches errors thrown by the ROOT layout itself
-// (src/app/layout.tsx), which src/app/error.tsx cannot reach. Because the root
-// layout has failed by the time this renders, it must supply its OWN <html>
-// and <body> — and it cannot rely on anything the root layout normally
-// provides, so no Inter font variable, no Toaster, no TabSessionGuard, and only
-// inline styles rather than Tailwind classes that a failed CSS import might not
-// have delivered.
-//
-// In development React shows its own error overlay on top of this.
-
 export default function GlobalError({
   error,
   reset,
